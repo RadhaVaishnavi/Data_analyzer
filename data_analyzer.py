@@ -9,6 +9,9 @@ from transformers import pipeline
 import tempfile
 import plotly.express as px
 import plotly.graph_objects as go
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
 
 # Set page config
 st.set_page_config(
@@ -17,12 +20,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Initialize session state
-if 'llm_loaded' not in st.session_state:
-    st.session_state.llm_loaded = False
-if 'analysis_results' not in st.session_state:
-    st.session_state.analysis_results = None
 
 def detect_data_type(file_path):
     """Detect what kind of data we're dealing with"""
@@ -37,45 +34,109 @@ def detect_data_type(file_path):
         }
         
         if file_ext in extension_map:
-            detected_type = extension_map[file_ext]
-            
-            # Verify the file can be read
-            if detected_type == 'tabular':
-                try:
-                    if file_ext == '.csv':
-                        pd.read_csv(file_path, nrows=5)
-                    elif file_ext == '.xlsx':
-                        pd.read_excel(file_path, nrows=5)
-                    return 'tabular'
-                except:
-                    return 'generic'
-                    
-            elif detected_type == 'images':
-                try:
-                    with Image.open(file_path) as img:
-                        img.verify()
-                    return 'images'
-                except:
-                    return 'generic'
-                    
-            elif detected_type == 'text':
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        f.read(1024)
-                    return 'text'
-                except:
-                    return 'generic'
-            
-            return detected_type
+            return extension_map[file_ext]
         else:
             return 'generic'
             
     except Exception as e:
-        st.error(f"Error detecting data type: {e}")
         return 'generic'
 
+def analyze_tabular_content(df):
+    """Deep analysis of tabular data content"""
+    analysis = {}
+    
+    # Basic stats
+    analysis['shape'] = df.shape
+    analysis['columns'] = list(df.columns)
+    analysis['dtypes'] = df.dtypes.astype(str).to_dict()
+    
+    # Missing values
+    missing_data = df.isnull().sum()
+    analysis['missing_values'] = missing_data.to_dict()
+    analysis['missing_percentage'] = (missing_data / len(df) * 100).round(2).to_dict()
+    analysis['total_missing'] = missing_data.sum()
+    
+    # Numeric analysis
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    analysis['numeric_columns'] = list(numeric_cols)
+    
+    if len(numeric_cols) > 0:
+        numeric_stats = df[numeric_cols].describe()
+        analysis['numeric_stats'] = numeric_stats.to_dict()
+        
+        # Detect outliers using IQR
+        outlier_info = {}
+        for col in numeric_cols:
+            Q1 = df[col].quantile(0.25)
+            Q3 = df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
+            outlier_info[col] = {
+                'count': len(outliers),
+                'percentage': (len(outliers) / len(df) * 100).round(2)
+            }
+        analysis['outliers'] = outlier_info
+    
+    # Categorical analysis
+    categorical_cols = df.select_dtypes(include=['object']).columns
+    analysis['categorical_columns'] = list(categorical_cols)
+    
+    if len(categorical_cols) > 0:
+        categorical_stats = {}
+        for col in categorical_cols:
+            value_counts = df[col].value_counts()
+            categorical_stats[col] = {
+                'unique_values': len(value_counts),
+                'top_value': value_counts.index[0] if len(value_counts) > 0 else None,
+                'top_count': value_counts.iloc[0] if len(value_counts) > 0 else 0,
+                'value_distribution': value_counts.head(10).to_dict()
+            }
+        analysis['categorical_stats'] = categorical_stats
+    
+    # Correlation analysis for numeric columns
+    if len(numeric_cols) > 1:
+        correlation_matrix = df[numeric_cols].corr()
+        analysis['correlation'] = correlation_matrix.to_dict()
+        
+        # Find high correlations
+        high_corr_pairs = []
+        for i in range(len(correlation_matrix.columns)):
+            for j in range(i+1, len(correlation_matrix.columns)):
+                corr_val = abs(correlation_matrix.iloc[i, j])
+                if corr_val > 0.8:
+                    high_corr_pairs.append({
+                        'col1': correlation_matrix.columns[i],
+                        'col2': correlation_matrix.columns[j],
+                        'correlation': corr_val
+                    })
+        analysis['high_correlations'] = high_corr_pairs
+    
+    # Data quality assessment
+    quality_issues = []
+    
+    # Check for constant columns
+    for col in df.columns:
+        if df[col].nunique() <= 1:
+            quality_issues.append(f"Constant column: {col}")
+    
+    # Check for high cardinality categorical
+    for col in categorical_cols:
+        if df[col].nunique() > 50:
+            quality_issues.append(f"High cardinality: {col} ({df[col].nunique()} unique values)")
+    
+    # Check for high missing percentage
+    for col, missing_pct in analysis['missing_percentage'].items():
+        if missing_pct > 50:
+            quality_issues.append(f"High missing values: {col} ({missing_pct}% missing)")
+    
+    analysis['quality_issues'] = quality_issues
+    
+    return analysis
+
 def analyze_file_basics(file_path):
-    """Basic analysis that works for any file type"""
+    """Enhanced analysis that deeply analyzes content"""
     file_stats = {
         'file_name': os.path.basename(file_path),
         'file_size_mb': os.path.getsize(file_path) / (1024 * 1024),
@@ -83,21 +144,24 @@ def analyze_file_basics(file_path):
         'data_type': detect_data_type(file_path)
     }
     
-    # Add type-specific basic info
+    # Add type-specific deep analysis
     if file_stats['data_type'] == 'tabular':
         try:
             if file_stats['file_extension'] == '.csv':
-                df = pd.read_csv(file_path, nrows=1000)
+                df = pd.read_csv(file_path)
             elif file_stats['file_extension'] == '.xlsx':
-                df = pd.read_excel(file_path, nrows=1000)
+                df = pd.read_excel(file_path)
             else:
-                df = pd.read_csv(file_path, nrows=1000)
-                
+                df = pd.read_csv(file_path)
+            
+            # Basic info
             file_stats['columns'] = list(df.columns)
-            file_stats['sample_rows'] = len(df)
-            file_stats['data_types'] = df.dtypes.astype(str).to_dict()
-            file_stats['missing_values'] = df.isnull().sum().to_dict()
+            file_stats['total_rows'] = len(df)
             file_stats['sample_data'] = df.head(10)
+            
+            # Deep content analysis
+            content_analysis = analyze_tabular_content(df)
+            file_stats.update(content_analysis)
             
         except Exception as e:
             file_stats['error'] = f"Could not read tabular data: {e}"
@@ -105,9 +169,11 @@ def analyze_file_basics(file_path):
     elif file_stats['data_type'] == 'text':
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read(5000)
-            file_stats['content_preview'] = content[:500] + "..." if len(content) > 500 else content
+                content = f.read(10000)
+            file_stats['content_preview'] = content[:1000] + "..." if len(content) > 1000 else content
             file_stats['line_count'] = len(content.split('\n'))
+            file_stats['word_count'] = len(content.split())
+            file_stats['char_count'] = len(content)
         except Exception as e:
             file_stats['error'] = f"Could not read text file: {e}"
     
@@ -117,18 +183,136 @@ def analyze_file_basics(file_path):
                 file_stats['image_size'] = img.size
                 file_stats['image_mode'] = img.mode
                 file_stats['image_format'] = img.format
+                file_stats['aspect_ratio'] = img.size[0] / img.size[1] if img.size[1] > 0 else 0
         except Exception as e:
             file_stats['error'] = f"Could not read image: {e}"
     
     return file_stats
 
+def get_content_based_recommendations(file_analysis):
+    """Recommendations based on actual data content analysis"""
+    if file_analysis['data_type'] != 'tabular':
+        return get_universal_recommendations(file_analysis)
+    
+    # Content-based recommendations
+    recommendations = "## 📊 CONTENT-BASED ANALYSIS\n\n"
+    
+    # Data quality issues
+    if file_analysis.get('quality_issues'):
+        recommendations += "### 🚨 DATA QUALITY ISSUES\n"
+        for issue in file_analysis['quality_issues'][:5]:  # Show top 5 issues
+            recommendations += f"- {issue}\n"
+        recommendations += "\n"
+    
+    # Missing values summary
+    total_missing = file_analysis.get('total_missing', 0)
+    if total_missing > 0:
+        missing_pct = (total_missing / (file_analysis['total_rows'] * len(file_analysis['columns'])) * 100)
+        recommendations += f"### 📉 MISSING DATA\n"
+        recommendations += f"- Total missing values: {total_missing} ({missing_pct:.1f}% of all data)\n"
+        
+        # Show columns with highest missing percentage
+        high_missing_cols = sorted(
+            [(col, pct) for col, pct in file_analysis.get('missing_percentage', {}).items() if pct > 10],
+            key=lambda x: x[1],
+            reverse=True
+        )[:3]
+        
+        if high_missing_cols:
+            recommendations += "- Columns needing attention:\n"
+            for col, pct in high_missing_cols:
+                recommendations += f"  - {col}: {pct}% missing\n"
+        recommendations += "\n"
+    
+    # Model recommendations based on data characteristics
+    numeric_cols = file_analysis.get('numeric_columns', [])
+    categorical_cols = file_analysis.get('categorical_columns', [])
+    total_rows = file_analysis.get('total_rows', 0)
+    
+    recommendations += "### 🤖 INTELLIGENT MODEL SUGGESTIONS\n"
+    
+    # Determine problem type based on data
+    if len(numeric_cols) > 0 and len(categorical_cols) > 0:
+        # Mixed data - classification or regression
+        if any('target' in col.lower() or 'label' in col.lower() or 'class' in col.lower() for col in file_analysis['columns']):
+            recommendations += "- **Primary**: XGBoost Classifier (excellent for mixed data types)\n"
+            recommendations += "- **Alternative**: Random Forest Classifier (robust, interpretable)\n"
+            recommendations += "- **Advanced**: LightGBM (fast, great for categorical features)\n"
+        else:
+            recommendations += "- **Primary**: XGBoost Regressor (best for structured data)\n"
+            recommendations += "- **Alternative**: Random Forest Regressor (handles outliers well)\n"
+            recommendations += "- **Advanced**: CatBoost (excellent for categorical data)\n"
+    elif len(numeric_cols) > 5:
+        recommendations += "- **Primary**: Neural Networks (capture complex numeric patterns)\n"
+        recommendations += "- **Alternative**: Gradient Boosting (XGBoost/LightGBM)\n"
+        recommendations += "- **Baseline**: Linear Models (fast, interpretable)\n"
+    else:
+        recommendations += "- **Primary**: XGBoost (versatile for most tabular data)\n"
+        recommendations += "- **Alternative**: Random Forest (stable, good default)\n"
+        recommendations += "- **Baseline**: Logistic Regression/Linear Regression\n"
+    
+    recommendations += "\n### 🛠️ SPECIFIC PREPROCESSING STEPS\n"
+    
+    # Preprocessing based on actual data
+    if file_analysis.get('missing_values', {}):
+        recommendations += "- **Handle missing values**:\n"
+        if total_missing < (0.05 * total_rows * len(file_analysis['columns'])):
+            recommendations += "  - Use imputation (median for numeric, mode for categorical)\n"
+        else:
+            recommendations += "  - Consider advanced imputation (KNN, MICE) or removal\n"
+    
+    if categorical_cols:
+        recommendations += "- **Encode categorical variables**:\n"
+        high_card_cols = [col for col in categorical_cols 
+                         if file_analysis.get('categorical_stats', {}).get(col, {}).get('unique_values', 0) > 10]
+        if high_card_cols:
+            recommendations += "  - High-cardinality features: Use target encoding or embedding\n"
+        recommendations += "  - Low-cardinality: One-hot encoding\n"
+    
+    if numeric_cols:
+        recommendations += "- **Scale numeric features**: StandardScaler or MinMaxScaler\n"
+    
+    if file_analysis.get('high_correlations'):
+        recommendations += "- **Address multicollinearity**: Remove highly correlated features\n"
+    
+    # Outlier handling
+    outlier_cols = [col for col, info in file_analysis.get('outliers', {}).items() 
+                   if info.get('percentage', 0) > 5]
+    if outlier_cols:
+        recommendations += "- **Handle outliers**: Use robust models or outlier treatment\n"
+    
+    recommendations += "\n### 📈 DATA CHARACTERISTICS SUMMARY\n"
+    recommendations += f"- **Dataset size**: {total_rows} rows × {len(file_analysis['columns'])} columns\n"
+    recommendations += f"- **Numeric features**: {len(numeric_cols)}\n"
+    recommendations += f"- **Categorical features**: {len(categorical_cols)}\n"
+    recommendations += f"- **Data quality score**: {calculate_quality_score(file_analysis):.1f}/10\n"
+    
+    return recommendations
+
+def calculate_quality_score(file_analysis):
+    """Calculate data quality score based on multiple factors"""
+    score = 10.0
+    
+    # Penalize for missing values
+    missing_pct = file_analysis.get('total_missing', 0) / (file_analysis.get('total_rows', 1) * len(file_analysis.get('columns', 1)))
+    score -= missing_pct * 20  # Up to 2 points penalty
+    
+    # Penalize for quality issues
+    score -= min(len(file_analysis.get('quality_issues', [])), 5) * 0.5
+    
+    # Penalize for high cardinality
+    high_card_cols = [col for col in file_analysis.get('categorical_columns', [])
+                     if file_analysis.get('categorical_stats', {}).get(col, {}).get('unique_values', 0) > 50]
+    score -= len(high_card_cols) * 0.3
+    
+    return max(0, min(10, score))
+
 def get_universal_recommendations(file_analysis):
-    """Smart recommendations that work for ANY data type automatically"""
+    """Fallback to universal recommendations"""
     data_type = file_analysis['data_type']
     file_size = file_analysis['file_size_mb']
     num_columns = len(file_analysis.get('columns', []))
     
-    # Universal base template
     recommendations = {
         'tabular': f"""
 **SMART ANALYSIS FOR TABULAR DATA**
@@ -139,231 +323,130 @@ def get_universal_recommendations(file_analysis):
 - **Type:** Structured tabular data
 
 🤖 **MODEL SUGGESTIONS:**
-- **Primary:** XGBoost (best for structured data, handles missing values well)
-- **Alternative:** Random Forest (interpretable, robust to outliers)
-- **Advanced:** Neural Networks (if patterns are complex and non-linear)
+- **Primary:** XGBoost (best for structured data)
+- **Alternative:** Random Forest (interpretable, robust)
+- **Advanced:** Neural Networks
 
 🛠️ **PREPROCESSING NEEDED:**
-- Handle missing values (impute with median/mode or remove)
-- Encode categorical variables (one-hot encoding for few categories, label encoding for many)
-- Scale numerical features (StandardScaler for normal distribution, MinMaxScaler for bounded ranges)
-- Feature selection (remove highly correlated or low-variance features)
-
-💻 **HARDWARE OPTIMIZATION:**
-- Your system can handle this dataset easily
-- Use GPU-accelerated XGBoost for faster training
-- Process in memory - no sampling needed
-- Consider distributed computing if dataset grows significantly
+- Handle missing values
+- Encode categorical variables
+- Scale numerical features
+- Feature selection
 """,
-        'images': f"""
-**SMART ANALYSIS FOR IMAGE DATA**
-
-🖼️ **Dataset Overview:**
-- **Size:** {file_size:.2f} MB
-- **Type:** Image data
-- **Format:** {file_analysis.get('image_format', 'Unknown')}
-
-🤖 **MODEL SUGGESTIONS:**
-- **Primary:** ResNet-50 (excellent for most vision tasks, good balance of accuracy/speed)
-- **Alternative:** EfficientNet (better speed/accuracy balance for mobile/edge devices)
-- **Object Detection:** YOLOv8 (fast and accurate for real-time detection)
-- **Segmentation:** U-Net (medical images, precise boundaries)
-
-🛠️ **PREPROCESSING NEEDED:**
-- Resize images to consistent dimensions (224x224 for ResNet, 320x320 for EfficientNet)
-- Normalize pixel values (divide by 255 for 0-1 range or use ImageNet stats)
-- Data augmentation (random rotation, flip, brightness/contrast adjustments)
-- Split into train/validation/test sets (70/15/15 recommended)
-
-💻 **HARDWARE OPTIMIZATION:**
-- Use mixed precision training (FP16) to save GPU memory
-- Batch size 16-32 depending on image size and GPU memory
-- Enable CUDA acceleration for all operations
-- Use data loaders with multiple workers for faster loading
-""",
-        'text': f"""
-**SMART ANALYSIS FOR TEXT DATA**
-
-📝 **Dataset Overview:**
-- **Size:** {file_size:.2f} MB
-- **Type:** Text data
-- **Lines:** {file_analysis.get('line_count', 'Unknown')}
-
-🤖 **MODEL SUGGESTIONS:**
-- **Primary:** BERT (state-of-the-art for most NLP tasks, excellent understanding)
-- **Alternative:** DistilBERT (40% smaller, 60% faster, 95% of BERT's performance)
-- **Classic:** TF-IDF + SVM (fast baseline, good for simple classification)
-- **Sequence:** LSTM/GRU (for time-series text data)
-
-🛠️ **PREPROCESSING NEEDED:**
-- Tokenization (split text into words/subwords)
-- Padding/truncation to consistent length
-- Remove stop words and special characters (domain-dependent)
-- Text cleaning (lowercase, remove URLs/emails, handle contractions)
-- Train/validation split with stratification if classification
-
-💻 **HARDWARE OPTIMIZATION:**
-- Fine-tune BERT on GPU for best results
-- Use smaller batch sizes for long texts to avoid OOM
-- Consider gradient accumulation for effective larger batches
-- Use attention optimization (flash attention) if available
-""",
-        'generic': f"""
-**SMART ANALYSIS FOR UNKNOWN DATA**
-
-🔍 **Dataset Overview:**
-- **Size:** {file_size:.2f} MB
-- **Type:** Unknown/Generic data format
-
-🤖 **MODEL SUGGESTIONS:**
-- Start with exploratory data analysis to understand patterns
-- Try multiple approaches: simple models first, then complex
-- Consider both supervised and unsupervised learning
-- Use cross-validation to evaluate model performance
-
-🛠️ **PREPROCESSING NEEDED:**
-- Explore data structure and format first
-- Convert to appropriate data format if needed
-- Handle missing/incorrect values appropriately
-- Feature engineering based on domain knowledge
-- Normalize/standardize based on data distribution
-
-💻 **HARDWARE OPTIMIZATION:**
-- Start with small samples to test approaches
-- Scale up as understanding improves
-- Monitor resource usage during processing
-- Use appropriate data structures for efficiency
-"""
+        'images': "Image analysis recommendations...",
+        'text': "Text analysis recommendations...",
+        'generic': "Generic data recommendations..."
     }
     
-    # Select the appropriate template
-    base_recommendation = recommendations.get(data_type, recommendations['generic'])
-    
-    # Add data-specific insights
-    additional_insights = "\n**📈 DATA-SPECIFIC INSIGHTS:**\n"
-    
-    if data_type == 'tabular':
-        if num_columns > 50:
-            additional_insights += "• **High-dimensional data:** Consider PCA or feature selection to reduce complexity\n"
-        if num_columns < 10:
-            additional_insights += "• **Low-dimensional data:** Focus on feature engineering and interaction terms\n"
-        if file_size > 100:
-            additional_insights += "• **Large dataset:** Use incremental learning or sampling for initial experiments\n"
-        else:
-            additional_insights += "• **Dataset size:** Easily manageable on standard hardware\n"
-        
-        # Add column type insights
-        if 'data_types' in file_analysis:
-            numeric_cols = sum(1 for dtype in file_analysis['data_types'].values() 
-                             if 'int' in dtype or 'float' in dtype)
-            categorical_cols = num_columns - numeric_cols
-            additional_insights += f"• **Column types:** {numeric_cols} numeric, {categorical_cols} categorical\n"
-    
-    elif data_type == 'images':
-        if file_size > 500:
-            additional_insights += "• **Large image dataset:** Consider transfer learning to save training time\n"
-        else:
-            additional_insights += "• **Image dataset:** Suitable for training from scratch or fine-tuning\n"
-        
-        if 'image_size' in file_analysis:
-            additional_insights += f"• **Image dimensions:** {file_analysis['image_size']}\n"
-    
-    elif data_type == 'text':
-        if file_size > 50:
-            additional_insights += "• **Large text corpus:** Consider distributed processing for efficiency\n"
-        else:
-            additional_insights += "• **Text dataset:** Easily processable on single machine\n"
-    
-    return base_recommendation + additional_insights
+    return recommendations.get(data_type, recommendations['generic'])
 
-def create_visualizations(analysis):
-    """Create visualizations based on data type"""
-    if analysis['data_type'] == 'tabular' and 'sample_data' in analysis:
-        df = analysis['sample_data']
+def create_advanced_visualizations(analysis):
+    """Create advanced visualizations based on content analysis"""
+    if analysis['data_type'] == 'tabular':
         
-        # Create tabs for different visualizations
-        tab1, tab2, tab3 = st.tabs(["Data Preview", "Missing Values", "Data Types"])
+        # Create multiple tabs for different analyses
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📋 Data Preview", "📊 Missing Values", "📈 Distributions", 
+            "🔗 Correlations", "📉 Quality Report"
+        ])
         
         with tab1:
             st.subheader("Data Preview")
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(analysis['sample_data'], use_container_width=True)
+            
+            # Basic stats
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Rows", analysis['total_rows'])
+            with col2:
+                st.metric("Total Columns", len(analysis['columns']))
+            with col3:
+                st.metric("Numeric Columns", len(analysis.get('numeric_columns', [])))
+            with col4:
+                st.metric("Categorical Columns", len(analysis.get('categorical_columns', [])))
         
         with tab2:
             st.subheader("Missing Values Analysis")
-            missing_data = pd.DataFrame({
-                'Column': list(analysis['missing_values'].keys()),
-                'Missing_Count': list(analysis['missing_values'].values())
-            })
-            missing_data['Missing_Percentage'] = (missing_data['Missing_Count'] / len(df) * 100).round(2)
-            
-            fig = px.bar(missing_data, x='Column', y='Missing_Percentage', 
-                        title='Missing Values by Column (%)',
-                        color='Missing_Percentage')
-            st.plotly_chart(fig, use_container_width=True)
+            if analysis.get('missing_values'):
+                missing_data = pd.DataFrame({
+                    'Column': list(analysis['missing_values'].keys()),
+                    'Missing_Count': list(analysis['missing_values'].values()),
+                    'Missing_Percentage': list(analysis['missing_percentage'].values())
+                })
+                
+                fig = px.bar(missing_data.nlargest(10, 'Missing_Count'), 
+                           x='Column', y='Missing_Percentage',
+                           title='Top 10 Columns with Missing Values',
+                           color='Missing_Percentage')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show missing values table
+                st.subheader("Missing Values Details")
+                st.dataframe(missing_data[missing_data['Missing_Count'] > 0], use_container_width=True)
+            else:
+                st.success("✅ No missing values detected!")
         
         with tab3:
-            st.subheader("Data Types Distribution")
-            type_counts = pd.Series(analysis['data_types']).value_counts()
-            fig = px.pie(values=type_counts.values, names=type_counts.index,
-                        title='Data Types Distribution')
-            st.plotly_chart(fig, use_container_width=True)
-    
-    elif analysis['data_type'] == 'text':
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Text Preview")
-            st.text_area("Content", analysis.get('content_preview', 'No content'), height=200)
+            st.subheader("Data Distributions")
+            numeric_cols = analysis.get('numeric_columns', [])
+            if numeric_cols:
+                selected_col = st.selectbox("Select numeric column:", numeric_cols)
+                if selected_col:
+                    fig = px.histogram(analysis['sample_data'], x=selected_col, 
+                                     title=f'Distribution of {selected_col}')
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            categorical_cols = analysis.get('categorical_columns', [])
+            if categorical_cols:
+                selected_cat = st.selectbox("Select categorical column:", categorical_cols)
+                if selected_cat:
+                    value_counts = analysis['sample_data'][selected_cat].value_counts().head(10)
+                    fig = px.bar(x=value_counts.index, y=value_counts.values,
+                               title=f'Top 10 Values in {selected_cat}')
+                    st.plotly_chart(fig, use_container_width=True)
         
-        with col2:
-            st.subheader("Text Statistics")
-            stats_data = {
-                'Metric': ['File Size', 'Lines', 'Characters'],
-                'Value': [
-                    f"{analysis['file_size_mb']:.2f} MB",
-                    analysis.get('line_count', 'N/A'),
-                    len(analysis.get('content_preview', ''))
-                ]
-            }
-            st.table(pd.DataFrame(stats_data))
-    
-    elif analysis['data_type'] == 'images':
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Image Preview")
-            try:
-                image = Image.open(analysis['file_name'])
-                st.image(image, caption=analysis['file_name'], use_column_width=True)
-            except:
-                st.error("Could not display image")
+        with tab4:
+            st.subheader("Feature Correlations")
+            numeric_cols = analysis.get('numeric_columns', [])
+            if len(numeric_cols) > 1:
+                corr_matrix = analysis['sample_data'][numeric_cols].corr()
+                fig = px.imshow(corr_matrix, aspect='auto', color_continuous_scale='RdBu_r',
+                              title='Correlation Matrix')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show high correlation pairs
+                high_corrs = analysis.get('high_correlations', [])
+                if high_corrs:
+                    st.subheader("Highly Correlated Feature Pairs (>0.8)")
+                    for pair in high_corrs[:5]:
+                        st.write(f"- {pair['col1']} ↔ {pair['col2']}: {pair['correlation']:.3f}")
         
-        with col2:
-            st.subheader("Image Properties")
-            props_data = {
-                'Property': ['Size', 'Dimensions', 'Mode', 'Format'],
-                'Value': [
-                    f"{analysis['file_size_mb']:.2f} MB",
-                    str(analysis.get('image_size', 'N/A')),
-                    analysis.get('image_mode', 'N/A'),
-                    analysis.get('image_format', 'N/A')
-                ]
-            }
-            st.table(pd.DataFrame(props_data))
+        with tab5:
+            st.subheader("Data Quality Report")
+            
+            # Quality score
+            quality_score = calculate_quality_score(analysis)
+            st.metric("Overall Quality Score", f"{quality_score:.1f}/10")
+            
+            # Quality issues
+            issues = analysis.get('quality_issues', [])
+            if issues:
+                st.error("🚨 Quality Issues Found:")
+                for issue in issues[:5]:
+                    st.write(f"- {issue}")
+            else:
+                st.success("✅ No major quality issues detected!")
+                
+            # Outlier summary
+            outliers = analysis.get('outliers', {})
+            if outliers:
+                outlier_cols = [col for col, info in outliers.items() if info.get('percentage', 0) > 5]
+                if outlier_cols:
+                    st.warning(f"⚠️ Columns with significant outliers: {', '.join(outlier_cols[:3])}")
 
-# Streamlit UI
 def main():
-    st.title("🤖 Universal Data Analyzer")
-    st.markdown("Upload **ANY** dataset (CSV, Images, Text, Excel) and get intelligent analysis and model recommendations!")
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        st.info("This tool analyzes any dataset and provides tailored machine learning recommendations.")
-        
-        st.subheader("Hardware Info")
-        if torch.cuda.is_available():
-            st.success(f"✅ GPU Available: {torch.cuda.get_device_name(0)}")
-        else:
-            st.warning("⚠️ No GPU detected - using CPU")
+    st.title("🤖 Advanced Universal Data Analyzer")
+    st.markdown("Upload **ANY** dataset and get **deep content analysis** with intelligent recommendations!")
     
     # File upload
     uploaded_file = st.file_uploader(
@@ -379,12 +462,12 @@ def main():
             tmp_path = tmp_file.name
         
         try:
-            # Analyze file
-            with st.spinner("🔍 Analyzing your dataset..."):
+            # Analyze file with deep content analysis
+            with st.spinner("🔍 Performing deep content analysis..."):
                 analysis = analyze_file_basics(tmp_path)
-                st.session_state.analysis_results = analysis
             
             # Display basic info
+            st.subheader("📄 File Overview")
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -392,89 +475,55 @@ def main():
             with col2:
                 st.metric("File Size", f"{analysis['file_size_mb']:.2f} MB")
             with col3:
-                if 'columns' in analysis:
-                    st.metric("Columns", len(analysis['columns']))
-                else:
-                    st.metric("Properties", "N/A")
+                st.metric("Columns", len(analysis['columns']))
             with col4:
-                if 'sample_rows' in analysis:
-                    st.metric("Sample Rows", analysis['sample_rows'])
-                else:
-                    st.metric("Status", "Analyzed")
+                st.metric("Total Rows", analysis.get('total_rows', 'N/A'))
             
-            # Visualizations
-            st.subheader("📊 Data Exploration")
-            create_visualizations(analysis)
+            # Advanced Visualizations
+            st.subheader("📊 Deep Data Exploration")
+            create_advanced_visualizations(analysis)
             
-            # Recommendations
-            st.subheader("🎯 Intelligent Recommendations")
-            with st.expander("View Detailed Recommendations", expanded=True):
-                recommendations = get_universal_recommendations(analysis)
+            # Content-Based Recommendations
+            st.subheader("🎯 Intelligent Content-Based Recommendations")
+            with st.expander("View Detailed Analysis", expanded=True):
+                recommendations = get_content_based_recommendations(analysis)
                 st.markdown(recommendations)
             
-            # Next steps
-            st.subheader("🚀 Implementation Guide")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.info("**Immediate Actions:**")
-                st.markdown("""
-                1. **Review data quality** - Check for missing values and inconsistencies
-                2. **Implement preprocessing** - Follow the recommended steps
-                3. **Start with primary model** - Quick prototype with suggested approach
-                4. **Validate results** - Use cross-validation and appropriate metrics
-                """)
-            
-            with col2:
-                st.info("**Advanced Steps:**")
-                st.markdown("""
-                1. **Feature engineering** - Create domain-specific features
-                2. **Model tuning** - Hyperparameter optimization
-                3. **Ensemble methods** - Combine multiple models
-                4. **Deployment** - Model serving and monitoring
-                """)
-        
         except Exception as e:
             st.error(f"Error analyzing file: {str(e)}")
         
         finally:
-            # Clean up temporary file
+            # Clean up
             try:
                 os.unlink(tmp_path)
             except:
                 pass
     
     else:
-        # Show demo when no file uploaded
-        st.info("👆 Upload a file to get started!")
+        # Demo section
+        st.info("👆 Upload a CSV, Excel, or other data file to see deep content analysis!")
         
-        col1, col2, col3 = st.columns(3)
+        # Show what the tool analyzes
+        st.subheader("🔍 What This Tool Analyzes:")
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📈 Tabular Data")
             st.markdown("""
-            - CSV, Excel, Parquet files
-            - Automatic column analysis
-            - Missing value detection
-            - Model recommendations
+            **📈 For Tabular Data:**
+            - Data quality and missing values
+            - Feature distributions and outliers
+            - Correlation patterns
+            - Data type analysis
+            - Quality scoring
             """)
         
         with col2:
-            st.subheader("🖼️ Image Data")
             st.markdown("""
-            - JPG, PNG, JPEG files
-            - Image property analysis
-            - Computer vision models
-            - Augmentation strategies
-            """)
-        
-        with col3:
-            st.subheader("📝 Text Data")
-            st.markdown("""
-            - TXT, JSON, XML files
-            - Text statistics
-            - NLP model suggestions
-            - Preprocessing guidance
+            **🤖 Intelligent Recommendations:**
+            - Model selection based on data characteristics
+            - Specific preprocessing steps needed
+            - Data quality improvements
+            - Hardware optimization tips
             """)
 
 if __name__ == "__main__":
