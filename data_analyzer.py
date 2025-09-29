@@ -61,7 +61,6 @@ def smart_detect_column_types(df):
         sample = df[col].dropna().sample(sample_size) if len(df[col].dropna()) > sample_size else df[col].dropna()
         
         # Try to detect numeric
-        numeric_count = 0
         try:
             # Try converting to numeric
             pd.to_numeric(df[col].dropna().head(100), errors='coerce')
@@ -81,7 +80,6 @@ def smart_detect_column_types(df):
                 continue
         
         # Check for datetime
-        datetime_count = 0
         try:
             pd.to_datetime(df[col].dropna().head(10), errors='coerce')
             datetime_pct = (pd.to_datetime(df[col], errors='coerce').notna().sum() / len(df)) * 100
@@ -121,7 +119,7 @@ def analyze_tabular_content(df):
     analysis.update(column_types)
     
     # Convert boolean to categorical for analysis
-    analysis['categorical_columns'].extend(analysis['boolean'])
+    analysis['categorical_columns'] = analysis['categorical'] + analysis['boolean']
     
     # Missing values
     missing_data = df.isnull().sum()
@@ -154,9 +152,9 @@ def analyze_tabular_content(df):
         analysis['outliers'] = outlier_info
     
     # Categorical analysis
-    if analysis['categorical']:
+    if analysis['categorical_columns']:
         categorical_stats = {}
-        for col in analysis['categorical']:
+        for col in analysis['categorical_columns']:
             try:
                 value_counts = df[col].value_counts()
                 categorical_stats[col] = {
@@ -203,7 +201,7 @@ def analyze_tabular_content(df):
             pass
     
     # Check for high cardinality categorical
-    for col in analysis['categorical']:
+    for col in analysis['categorical_columns']:
         try:
             unique_count = df[col].nunique()
             if unique_count > 50:
@@ -280,7 +278,7 @@ def get_content_based_recommendations(file_analysis):
     
     # Show actual column types detected
     numeric_count = len(file_analysis.get('numeric', []))
-    categorical_count = len(file_analysis.get('categorical', []))
+    categorical_count = len(file_analysis.get('categorical_columns', []))
     datetime_count = len(file_analysis.get('datetime', []))
     boolean_count = len(file_analysis.get('boolean', []))
     text_count = len(file_analysis.get('text', []))
@@ -304,7 +302,7 @@ def get_content_based_recommendations(file_analysis):
     if numeric_count > 0:
         recommendations += f"- **Sample numeric columns**: {', '.join(file_analysis['numeric'][:3])}\n"
     if categorical_count > 0:
-        recommendations += f"- **Sample categorical columns**: {', '.join(file_analysis['categorical'][:3])}\n"
+        recommendations += f"- **Sample categorical columns**: {', '.join(file_analysis['categorical_columns'][:3])}\n"
     recommendations += "\n"
     
     # Data quality issues
@@ -322,7 +320,7 @@ def get_content_based_recommendations(file_analysis):
     if any(missing_data.values()):
         total_missing = sum(missing_data.values())
         total_cells = file_analysis['total_rows'] * len(file_analysis['columns'])
-        missing_percentage = (total_missing / total_cells * 100)
+        missing_percentage = (total_missing / total_cells * 100)  # FIXED: Added closing parenthesis
         
         recommendations += "### 📉 MISSING VALUES ANALYSIS\n"
         recommendations += f"- **Total missing values**: {total_missing} ({missing_percentage:.1f}% of data)\n"
@@ -383,7 +381,10 @@ def get_content_based_recommendations(file_analysis):
     recommendations += "\n### 🛠️ SPECIFIC PREPROCESSING STEPS\n"
     
     if any(missing_data.values()):
-        missing_percentage = (sum(missing_data.values()) / (file_analysis['total_rows'] * len(file_analysis['columns'])) * 100
+        total_missing = sum(missing_data.values())
+        total_cells = file_analysis['total_rows'] * len(file_analysis['columns'])
+        missing_percentage = (total_missing / total_cells * 100)  # FIXED: Proper calculation
+        
         if missing_percentage < 5:
             recommendations += "- **Missing values**: Simple imputation (median for numeric, mode for categorical)\n"
         elif missing_percentage < 20:
@@ -394,7 +395,7 @@ def get_content_based_recommendations(file_analysis):
     if categorical_count > 0:
         # Check for high cardinality
         high_cardinality_cols = []
-        for col in file_analysis.get('categorical', []):
+        for col in file_analysis.get('categorical_columns', []):
             unique_vals = file_analysis.get('categorical_stats', {}).get(col, {}).get('unique_values', 0)
             if unique_vals > 20:
                 high_cardinality_cols.append(col)
@@ -464,7 +465,7 @@ def create_advanced_visualizations(analysis):
             with col3:
                 st.metric("Numeric Columns", len(analysis.get('numeric', [])))
             with col4:
-                st.metric("Categorical Columns", len(analysis.get('categorical', [])))
+                st.metric("Categorical Columns", len(analysis.get('categorical_columns', [])))
         
         with tab2:
             st.subheader("Column Type Distribution")
@@ -472,7 +473,7 @@ def create_advanced_visualizations(analysis):
             # Create column type distribution chart
             type_counts = {
                 'Numeric': len(analysis.get('numeric', [])),
-                'Categorical': len(analysis.get('categorical', [])),
+                'Categorical': len(analysis.get('categorical_columns', [])),
                 'Datetime': len(analysis.get('datetime', [])),
                 'Boolean': len(analysis.get('boolean', [])),
                 'Text': len(analysis.get('text', []))
@@ -490,8 +491,8 @@ def create_advanced_visualizations(analysis):
             # Show sample columns of each type
             if analysis.get('numeric'):
                 st.write("**Sample Numeric Columns:**", ", ".join(analysis['numeric'][:5]))
-            if analysis.get('categorical'):
-                st.write("**Sample Categorical Columns:**", ", ".join(analysis['categorical'][:5]))
+            if analysis.get('categorical_columns'):
+                st.write("**Sample Categorical Columns:**", ", ".join(analysis['categorical_columns'][:5]))
         
         with tab3:
             st.subheader("Data Quality Report")
