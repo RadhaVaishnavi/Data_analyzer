@@ -10,3 +10,4 @@ bitsandbytes
 openai
 google-generativeai
 anthropic
+huggingface_hub
