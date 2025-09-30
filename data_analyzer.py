@@ -1,4 +1,4 @@
-# universal_data_analyzer_llm.py
+# universal_data_analyzer_hf.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,326 +10,460 @@ import plotly.graph_objects as go
 import warnings
 warnings.filterwarnings('ignore')
 
-# LLM imports
-from openai import OpenAI
-import google.generativeai as genai
-import anthropic
+# Hugging Face imports
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+import torch
+from huggingface_hub import login
 
 # Set page config
 st.set_page_config(
-    page_title="AI Data Analyzer",
-    page_icon="🧠", 
+    page_title="Data Engineer's Analyzer",
+    page_icon="🔧", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize LLM clients (user will configure their preferred API)
-class LLMAnalyzer:
+class HFDataEngineer:
     def __init__(self):
-        self.available_models = {
-            "OpenAI GPT-4": "openai",
-            "Google Gemini": "gemini", 
-            "Anthropic Claude": "claude",
-            "Local Fallback": "local"
+        self.models = {
+            "Mixtral 8x7B": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+            "CodeLlama 34B": "codellama/CodeLlama-34b-Instruct-hf", 
+            "Zephyr 7B": "HuggingFaceH4/zephyr-7b-beta",
+            "Data Analysis Expert": "microsoft/DialoGPT-medium"  # Fallback
         }
-        self.client = None
-        self.model_type = None
+        self.pipeline = None
+        self.model_loaded = False
     
-    def setup_openai(self, api_key):
-        """Setup OpenAI client"""
+    def setup_huggingface(self, hf_token, model_choice):
+        """Setup Hugging Face with the chosen model"""
         try:
-            self.client = OpenAI(api_key=api_key)
-            self.model_type = "openai"
-            return True
-        except Exception as e:
-            st.error(f"OpenAI setup failed: {e}")
-            return False
-    
-    def setup_gemini(self, api_key):
-        """Setup Google Gemini client"""
-        try:
-            genai.configure(api_key=api_key)
-            self.client = genai.GenerativeModel('gemini-pro')
-            self.model_type = "gemini"
-            return True
-        except Exception as e:
-            st.error(f"Gemini setup failed: {e}")
-            return False
-    
-    def setup_claude(self, api_key):
-        """Setup Anthropic Claude client"""
-        try:
-            self.client = anthropic.Anthropic(api_key=api_key)
-            self.model_type = "claude"
-            return True
-        except Exception as e:
-            st.error(f"Claude setup failed: {e}")
-            return False
-    
-    def analyze_with_llm(self, data_summary, file_name):
-        """Use LLM to analyze data and provide intelligent recommendations"""
-        
-        if self.model_type == "openai":
-            return self._analyze_with_openai(data_summary, file_name)
-        elif self.model_type == "gemini":
-            return self._analyze_with_gemini(data_summary, file_name)
-        elif self.model_type == "claude":
-            return self._analyze_with_claude(data_summary, file_name)
-        else:
-            return self._local_fallback_analysis(data_summary, file_name)
-    
-    def _analyze_with_openai(self, data_summary, file_name):
-        """Analyze using OpenAI GPT"""
-        try:
-            prompt = f"""
-            You are an expert data scientist. Analyze this dataset and provide SPECIFIC, DETAILED recommendations.
-
-            DATASET: {file_name}
-            DATA SUMMARY:
-            {data_summary}
-
-            Provide a COMPREHENSIVE analysis with:
-
-            1. **DATA CHARACTERISTICS**: Key insights about this specific dataset
-            2. **PROBLEM TYPE DETECTION**: What type of ML problem is this most suited for?
-            3. **MODEL RECOMMENDATIONS**: 3 specific models with reasoning for THIS dataset
-            4. **PREPROCESSING STEPS**: Custom steps needed for THIS data
-            5. **POTENTIAL CHALLENGES**: Dataset-specific issues to watch for
-            6. **BUSINESS APPLICATIONS**: How this data could be used
-
-            Be VERY specific to this dataset - don't give generic advice.
-            """
+            # Login to Hugging Face
+            login(token=hf_token)
             
-            response = self.client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are an expert data scientist specializing in practical ML applications."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=1500,
-                temperature=0.7
+            model_name = self.models[model_choice]
+            st.info(f"🔄 Loading {model_choice}... This may take a few minutes.")
+            
+            # Load with quantization to save memory
+            self.pipeline = pipeline(
+                "text-generation",
+                model=model_name,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                trust_remote_code=True,
+                load_in_8bit=True,  # Reduce memory usage
+                max_length=2048
             )
             
-            return response.choices[0].message.content
+            self.model_loaded = True
+            return True
             
         except Exception as e:
-            return f"❌ OpenAI analysis failed: {str(e)}\n\n{self._local_fallback_analysis(data_summary, file_name)}"
+            st.error(f"❌ Failed to load model: {str(e)}")
+            return False
     
-    def _analyze_with_gemini(self, data_summary, file_name):
-        """Analyze using Google Gemini"""
+    def analyze_as_data_engineer(self, df, file_info):
+        """Perform deep data engineering analysis"""
+        
+        # First, create comprehensive technical analysis
+        technical_analysis = self._create_technical_analysis(df, file_info)
+        
+        # Then use LLM for intelligent insights
+        prompt = self._create_data_engineer_prompt(technical_analysis, file_info['file_name'])
+        
         try:
-            prompt = f"""
-            As an expert data scientist, provide detailed analysis and recommendations for this dataset:
-
-            DATASET: {file_name}
-            DATA SUMMARY:
-            {data_summary}
-
-            Provide specific recommendations including:
-            - Data characteristics and patterns
-            - Suitable machine learning problem types  
-            - Recommended models with justifications
-            - Necessary preprocessing steps
-            - Potential challenges and solutions
-            - Business use cases
-
-            Focus on what makes THIS dataset unique.
-            """
-            
-            response = self.client.generate_content(prompt)
-            return response.text
-            
-        except Exception as e:
-            return f"❌ Gemini analysis failed: {str(e)}\n\n{self._local_fallback_analysis(data_summary, file_name)}"
-    
-    def _analyze_with_claude(self, data_summary, file_name):
-        """Analyze using Anthropic Claude"""
-        try:
-            prompt = f"""
-            Human: You are an expert data scientist. Please analyze this dataset and provide specific, detailed recommendations.
-
-            DATASET: {file_name}
-            DATA SUMMARY:
-            {data_summary}
-
-            Please provide a comprehensive analysis with:
-            1. Key data characteristics and insights
-            2. Recommended machine learning approaches  
-            3. Specific model suggestions with reasoning
-            4. Preprocessing requirements for this data
-            5. Potential challenges and mitigation strategies
-            6. Business applications
-
-            Be very specific to this dataset - avoid generic advice.
-
-            Assistant:
-            """
-            
-            response = self.client.messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=1500,
-                temperature=0.7,
-                messages=[{"role": "user", "content": prompt}]
+            response = self.pipeline(
+                prompt,
+                max_new_tokens=1024,
+                do_sample=True,
+                temperature=0.3,  # Lower temperature for more factual responses
+                top_p=0.9,
+                return_full_text=False
             )
             
-            return response.content[0].text
+            return response[0]['generated_text']
             
         except Exception as e:
-            return f"❌ Claude analysis failed: {str(e)}\n\n{self._local_fallback_analysis(data_summary, file_name)}"
+            return f"❌ Analysis failed: {str(e)}\n\n{self._fallback_technical_analysis(technical_analysis)}"
     
-    def _local_fallback_analysis(self, data_summary, file_name):
-        """Fallback analysis when no LLM is available"""
-        return f"""
-## 🤖 Basic Analysis (LLM Not Available)
-
-**Dataset**: {file_name}
-
-**Note**: This is a basic rule-based analysis. For intelligent, dataset-specific recommendations, please configure an LLM API key in the sidebar.
-
-**General Recommendations**:
-- Start with exploratory data analysis
-- Consider both tree-based models and neural networks
-- Focus on data quality and preprocessing
-
-**Setup an LLM API** in the sidebar for intelligent, customized recommendations!
-"""
-
-# Initialize the LLM analyzer
-llm_analyzer = LLMAnalyzer()
-
-def detect_data_type(file_path):
-    """Detect what kind of data we're dealing with"""
-    try:
-        file_ext = os.path.splitext(file_path)[1].lower()
+    def _create_technical_analysis(self, df, file_info):
+        """Create comprehensive technical data analysis"""
+        analysis = {}
         
-        extension_map = {
-            '.csv': 'tabular', '.xlsx': 'tabular', '.parquet': 'tabular',
-            '.jpg': 'images', '.png': 'images', '.jpeg': 'images', '.tiff': 'images',
-            '.txt': 'text', '.json': 'text', '.xml': 'text',
-            '.wav': 'audio', '.mp3': 'audio'
-        }
+        # Basic metrics
+        analysis['shape'] = df.shape
+        analysis['memory_usage_mb'] = df.memory_usage(deep=True).sum() / 1024 / 1024
+        analysis['file_size_mb'] = file_info['file_size_mb']
         
-        if file_ext in extension_map:
-            return extension_map[file_ext]
-        else:
-            return 'generic'
-            
-    except Exception as e:
-        return 'generic'
-
-def create_data_summary(df, file_info):
-    """Create a comprehensive data summary for LLM analysis"""
-    summary = f"""
-DATASET OVERVIEW:
-- Rows: {len(df):,}
-- Columns: {len(df.columns)}
-- File Size: {file_info['file_size_mb']:.2f} MB
-
-COLUMN ANALYSIS:
-- Total Columns: {len(df.columns)}
-- Numeric Columns: {len(df.select_dtypes(include=[np.number]).columns)}
-- Categorical Columns: {len(df.select_dtypes(include=['object']).columns)}
-- Boolean Columns: {len(df.select_dtypes(include=['bool']).columns)}
-
-DATA QUALITY:
-- Missing Values: {df.isnull().sum().sum()} total
-- Duplicate Rows: {df.duplicated().sum()}
-- Memory Usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB
-
-COLUMN DETAILS:
-"""
-    
-    # Add details for first 10 columns (to avoid token limits)
-    for i, col in enumerate(df.columns[:10]):
-        col_details = f"- {col}: {df[col].dtype}, {df[col].nunique()} unique values"
-        if df[col].isnull().sum() > 0:
-            col_details += f", {df[col].isnull().sum()} missing"
-        summary += col_details + "\n"
-    
-    # Add statistical summary for numeric columns
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    if len(numeric_cols) > 0:
-        summary += "\nNUMERIC FEATURES SUMMARY:\n"
-        for col in numeric_cols[:5]:  # Limit to first 5 numeric columns
+        # Data types analysis
+        dtypes_analysis = {}
+        for col in df.columns:
+            dtype = str(df[col].dtype)
+            if dtype not in dtypes_analysis:
+                dtypes_analysis[dtype] = []
+            dtypes_analysis[dtype].append(col)
+        analysis['dtype_distribution'] = dtypes_analysis
+        
+        # Null analysis
+        null_analysis = {}
+        for col in df.columns:
+            null_count = df[col].isnull().sum()
+            null_pct = (null_count / len(df)) * 100
+            if null_count > 0:
+                null_analysis[col] = {
+                    'count': null_count,
+                    'percentage': round(null_pct, 2),
+                    'type': 'CRITICAL' if null_pct > 50 else 'WARNING' if null_pct > 20 else 'INFO'
+                }
+        analysis['null_analysis'] = null_analysis
+        
+        # Cardinality analysis
+        cardinality = {}
+        for col in df.columns:
+            unique_count = df[col].nunique()
+            cardinality_pct = (unique_count / len(df)) * 100
+            cardinality[col] = {
+                'unique_count': unique_count,
+                'cardinality_pct': round(cardinality_pct, 2),
+                'type': 'HIGH' if cardinality_pct > 90 else 'MEDIUM' if cardinality_pct > 50 else 'LOW'
+            }
+        analysis['cardinality'] = cardinality
+        
+        # Statistical analysis for numeric columns
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        stats_analysis = {}
+        for col in numeric_cols:
             stats = df[col].describe()
-            summary += f"- {col}: mean={stats['mean']:.2f}, std={stats['std']:.2f}, min={stats['min']:.2f}, max={stats['max']:.2f}\n"
+            skewness = df[col].skew()
+            stats_analysis[col] = {
+                'mean': round(stats['mean'], 4),
+                'std': round(stats['std'], 4),
+                'min': round(stats['min'], 4),
+                'max': round(stats['max'], 4),
+                'skewness': round(skewness, 4),
+                'outlier_pct': self._calculate_outlier_percentage(df[col])
+            }
+        analysis['numeric_stats'] = stats_analysis
+        
+        # Data quality issues
+        quality_issues = self._identify_data_quality_issues(df, analysis)
+        analysis['quality_issues'] = quality_issues
+        
+        # Storage optimization suggestions
+        storage_optimization = self._suggest_storage_optimization(df)
+        analysis['storage_optimization'] = storage_optimization
+        
+        return analysis
     
-    return summary
+    def _calculate_outlier_percentage(self, series):
+        """Calculate percentage of outliers using IQR method"""
+        Q1 = series.quantile(0.25)
+        Q3 = series.quantile(0.75)
+        IQR = Q3 - Q1
+        if IQR == 0:
+            return 0
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        outliers = series[(series < lower_bound) | (series > upper_bound)]
+        return round((len(outliers) / len(series)) * 100, 2)
+    
+    def _identify_data_quality_issues(self, df, analysis):
+        """Identify data quality issues from a data engineering perspective"""
+        issues = []
+        
+        # High null percentage
+        for col, null_info in analysis['null_analysis'].items():
+            if null_info['type'] == 'CRITICAL':
+                issues.append(f"🚨 CRITICAL: {col} has {null_info['percentage']}% missing values")
+            elif null_info['type'] == 'WARNING':
+                issues.append(f"⚠️ WARNING: {col} has {null_info['percentage']}% missing values")
+        
+        # High cardinality (potential data leakage)
+        for col, card_info in analysis['cardinality'].items():
+            if card_info['type'] == 'HIGH':
+                issues.append(f"🔍 HIGH CARDINALITY: {col} has {card_info['unique_count']} unique values ({card_info['cardinality_pct']}%)")
+        
+        # Constant columns
+        for col in df.columns:
+            if df[col].nunique() <= 1:
+                issues.append(f"📊 CONSTANT COLUMN: {col} has only {df[col].nunique()} unique value")
+        
+        # High skewness in numeric columns
+        for col, stats in analysis.get('numeric_stats', {}).items():
+            if abs(stats['skewness']) > 2:
+                issues.append(f"📈 HIGHLY SKEWED: {col} has skewness of {stats['skewness']}")
+        
+        # High outlier percentage
+        for col, stats in analysis.get('numeric_stats', {}).items():
+            if stats['outlier_pct'] > 10:
+                issues.append(f"📊 OUTLIERS: {col} has {stats['outlier_pct']}% outliers")
+        
+        return issues
+    
+    def _suggest_storage_optimization(self, df):
+        """Suggest storage optimization strategies"""
+        optimizations = []
+        
+        current_memory = df.memory_usage(deep=True).sum() / 1024 / 1024
+        
+        # Check for downcasting opportunities
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            col_min = df[col].min()
+            col_max = df[col].max()
+            
+            if col_min >= 0:  # Unsigned integers
+                if col_max < 256:
+                    optimizations.append(f"🔧 {col}: Convert to uint8 (saves ~75% memory)")
+                elif col_max < 65536:
+                    optimizations.append(f"🔧 {col}: Convert to uint16 (saves ~50% memory)")
+            else:  # Signed integers
+                if col_min > -128 and col_max < 127:
+                    optimizations.append(f"🔧 {col}: Convert to int8 (saves ~75% memory)")
+                elif col_min > -32768 and col_max < 32767:
+                    optimizations.append(f"🔧 {col}: Convert to int16 (saves ~50% memory)")
+        
+        # Categorical optimization
+        object_cols = df.select_dtypes(include=['object']).columns
+        for col in object_cols:
+            unique_ratio = df[col].nunique() / len(df)
+            if unique_ratio < 0.5:  # Good candidate for categorical
+                optimizations.append(f"🔧 {col}: Convert to category (saves ~60% memory)")
+        
+        optimizations.append(f"💾 Current memory: {current_memory:.2f} MB")
+        optimizations.append(f"💾 Estimated savings: {current_memory * 0.3:.2f} MB (30% reduction possible)")
+        
+        return optimizations
+    
+    def _create_data_engineer_prompt(self, technical_analysis, filename):
+        """Create a detailed prompt for data engineering analysis"""
+        
+        prompt = f"""<|system|>
+You are a senior data engineer with 10+ years of experience. Analyze this dataset from a data engineering perspective and provide detailed, technical recommendations.
 
-def analyze_file_with_llm(file_path):
-    """Analyze file and prepare for LLM processing"""
+Focus on:
+1. DATA QUALITY ASSESSMENT
+2. STORAGE OPTIMIZATION
+3. PROCESSING CONSIDERATIONS
+4. PIPELINE DESIGN
+5. SCALABILITY CONCERNS
+
+Be technical, specific, and provide actionable recommendations. Use data engineering terminology.
+</|system|>
+<|user|>
+DATASET: {filename}
+
+TECHNICAL ANALYSIS:
+- Shape: {technical_analysis['shape']}
+- Memory Usage: {technical_analysis['memory_usage_mb']:.2f} MB
+- File Size: {technical_analysis['file_size_mb']:.2f} MB
+
+DATA TYPE DISTRIBUTION:
+{self._format_dtype_distribution(technical_analysis['dtype_distribution'])}
+
+NULL VALUE ANALYSIS:
+{self._format_null_analysis(technical_analysis['null_analysis'])}
+
+CARDINALITY ANALYSIS:
+{self._format_cardinality_analysis(technical_analysis['cardinality'])}
+
+NUMERIC FEATURES STATISTICS:
+{self._format_numeric_stats(technical_analysis.get('numeric_stats', {}))}
+
+DATA QUALITY ISSUES:
+{self._format_quality_issues(technical_analysis['quality_issues'])}
+
+STORAGE OPTIMIZATION SUGGESTIONS:
+{self._format_storage_optimization(technical_analysis['storage_optimization'])}
+
+Provide a comprehensive data engineering analysis covering:
+1. Data Quality Score and Issues
+2. Storage Optimization Strategy
+3. Processing Recommendations
+4. Pipeline Design Considerations
+5. Scalability Assessment
+6. Specific Technical Actions
+
+Be brutally honest about data quality problems and provide concrete solutions.
+</|user|>
+<|assistant|>
+"""
+        return prompt
+    
+    def _format_dtype_distribution(self, dtype_dist):
+        text = ""
+        for dtype, cols in dtype_dist.items():
+            text += f"- {dtype}: {len(cols)} columns\n"
+            if len(cols) <= 5:
+                text += f"  Samples: {', '.join(cols)}\n"
+        return text
+    
+    def _format_null_analysis(self, null_analysis):
+        if not null_analysis:
+            return "✅ No missing values detected"
+        
+        text = ""
+        for col, info in null_analysis.items():
+            text += f"- {col}: {info['count']} nulls ({info['percentage']}%) - {info['type']}\n"
+        return text
+    
+    def _format_cardinality_analysis(self, cardinality):
+        text = ""
+        for col, info in cardinality.items():
+            text += f"- {col}: {info['unique_count']} unique ({info['cardinality_pct']}%) - {info['type']} cardinality\n"
+        return text
+    
+    def _format_numeric_stats(self, numeric_stats):
+        if not numeric_stats:
+            return "No numeric columns found"
+        
+        text = ""
+        for col, stats in numeric_stats.items():
+            text += f"- {col}: mean={stats['mean']}, std={stats['std']}, range=[{stats['min']}, {stats['max']}], skew={stats['skewness']}, outliers={stats['outlier_pct']}%\n"
+        return text
+    
+    def _format_quality_issues(self, issues):
+        if not issues:
+            return "✅ No major data quality issues detected"
+        
+        text = ""
+        for issue in issues[:10]:  # Limit to top 10 issues
+            text += f"{issue}\n"
+        return text
+    
+    def _format_storage_optimization(self, optimizations):
+        text = ""
+        for opt in optimizations:
+            text += f"{opt}\n"
+        return text
+    
+    def _fallback_technical_analysis(self, technical_analysis):
+        """Fallback analysis when LLM fails"""
+        return f"""
+## 🔧 DATA ENGINEERING ANALYSIS (Fallback)
+
+### 📊 DATASET OVERVIEW
+- **Shape**: {technical_analysis['shape']}
+- **Memory Usage**: {technical_analysis['memory_usage_mb']:.2f} MB
+- **File Size**: {technical_analysis['file_size_mb']:.2f} MB
+
+### 🚨 DATA QUALITY ISSUES
+{chr(10).join(technical_analysis['quality_issues'][:10])}
+
+### 💾 STORAGE OPTIMIZATION
+{chr(10).join(technical_analysis['storage_optimization'])}
+
+### 🎯 RECOMMENDATIONS
+1. **Address data quality issues** before modeling
+2. **Implement storage optimizations** to reduce memory usage
+3. **Consider data type conversions** for better performance
+4. **Monitor for data drift** in production
+"""
+
+# Initialize the data engineer analyzer
+data_engineer = HFDataEngineer()
+
+def analyze_file(file_path):
+    """Analyze file and return basic info"""
     file_info = {
         'file_name': os.path.basename(file_path),
         'file_size_mb': os.path.getsize(file_path) / (1024 * 1024),
         'file_extension': os.path.splitext(file_path)[1],
-        'data_type': detect_data_type(file_path)
     }
     
-    if file_info['data_type'] == 'tabular':
-        try:
-            if file_info['file_extension'] == '.csv':
-                df = pd.read_csv(file_path)
-            elif file_info['file_extension'] == '.xlsx':
-                df = pd.read_excel(file_path)
-            else:
-                df = pd.read_csv(file_path)
-            
-            file_info['shape'] = df.shape
-            file_info['sample_data'] = df.head(10)
-            file_info['data_summary'] = create_data_summary(df, file_info)
-            
-        except Exception as e:
-            file_info['error'] = f"Error reading file: {str(e)}"
+    try:
+        if file_info['file_extension'] == '.csv':
+            df = pd.read_csv(file_path)
+        elif file_info['file_extension'] == '.xlsx':
+            df = pd.read_excel(file_path)
+        else:
+            df = pd.read_csv(file_path)
+        
+        file_info['df'] = df
+        file_info['shape'] = df.shape
+        
+    except Exception as e:
+        file_info['error'] = str(e)
     
     return file_info
 
-def main():
-    st.title("🧠 AI-Powered Data Analyzer")
-    st.markdown("Upload any dataset and get **intelligent, LLM-powered analysis** with unique recommendations!")
+def create_technical_dashboard(technical_analysis):
+    """Create a technical dashboard for data engineers"""
     
-    # Sidebar for LLM configuration
-    with st.sidebar:
-        st.header("🔧 AI Configuration")
-        st.markdown("Choose your preferred AI model for intelligent analysis:")
+    st.subheader("🔧 Technical Dashboard")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Dataset Shape", f"{technical_analysis['shape'][0]:,} × {technical_analysis['shape'][1]}")
+    with col2:
+        st.metric("Memory Usage", f"{technical_analysis['memory_usage_mb']:.2f} MB")
+    with col3:
+        st.metric("File Size", f"{technical_analysis['file_size_mb']:.2f} MB")
+    with col4:
+        quality_score = 10 - min(10, len(technical_analysis['quality_issues']) * 0.5)
+        st.metric("Quality Score", f"{quality_score:.1f}/10")
+    
+    # Data Quality Issues
+    with st.expander("🚨 Data Quality Issues", expanded=True):
+        if technical_analysis['quality_issues']:
+            for issue in technical_analysis['quality_issues'][:10]:
+                st.write(issue)
+        else:
+            st.success("✅ No major data quality issues detected")
+    
+    # Storage Optimization
+    with st.expander("💾 Storage Optimization", expanded=True):
+        for opt in technical_analysis['storage_optimization']:
+            st.write(opt)
+    
+    # Data Types Distribution
+    with st.expander("📊 Data Types Analysis", expanded=False):
+        dtype_data = []
+        for dtype, cols in technical_analysis['dtype_distribution'].items():
+            dtype_data.append({'Type': dtype, 'Count': len(cols)})
         
-        llm_choice = st.selectbox(
-            "Select AI Model",
-            ["OpenAI GPT-4", "Google Gemini", "Anthropic Claude", "Local Fallback"]
+        if dtype_data:
+            dtype_df = pd.DataFrame(dtype_data)
+            fig = px.pie(dtype_df, values='Count', names='Type', title='Data Type Distribution')
+            st.plotly_chart(fig, use_container_width=True)
+
+def main():
+    st.title("🔧 Data Engineer's Analyzer")
+    st.markdown("Get **deep, technical data engineering analysis** with Hugging Face models")
+    
+    # Sidebar for Hugging Face configuration
+    with st.sidebar:
+        st.header("🤗 Hugging Face Setup")
+        
+        hf_token = st.text_input("Enter Hugging Face Token", type="password")
+        
+        model_choice = st.selectbox(
+            "Choose Model",
+            list(data_engineer.models.keys())
         )
         
-        api_key = None
-        if llm_choice != "Local Fallback":
-            api_key = st.text_input(f"Enter {llm_choice} API Key", type="password")
-        
-        if st.button("Connect AI Model"):
-            if llm_choice == "OpenAI GPT-4" and api_key:
-                if llm_analyzer.setup_openai(api_key):
-                    st.success("✅ Connected to OpenAI GPT-4!")
-            elif llm_choice == "Google Gemini" and api_key:
-                if llm_analyzer.setup_gemini(api_key):
-                    st.success("✅ Connected to Google Gemini!")
-            elif llm_choice == "Anthropic Claude" and api_key:
-                if llm_analyzer.setup_claude(api_key):
-                    st.success("✅ Connected to Anthropic Claude!")
-            elif llm_choice == "Local Fallback":
-                st.info("Using local fallback analysis")
+        if st.button("Load Model"):
+            if hf_token:
+                with st.spinner("Loading model..."):
+                    if data_engineer.setup_huggingface(hf_token, model_choice):
+                        st.success(f"✅ {model_choice} loaded successfully!")
             else:
-                st.error("Please enter a valid API key")
+                st.error("Please enter your Hugging Face token")
         
         st.markdown("---")
         st.markdown("""
-        **Why use AI analysis?**
-        - 🧠 **Intelligent insights** specific to your data
-        - 🎯 **Custom recommendations** based on patterns
-        - 🔍 **Deep understanding** of data characteristics
-        - 💡 **Creative suggestions** for model selection
+        **🔧 Data Engineering Focus:**
+        - Data Quality Assessment
+        - Storage Optimization  
+        - Pipeline Design
+        - Scalability Analysis
+        - Technical Debt Identification
         """)
     
     # File upload
     uploaded_file = st.file_uploader(
         "📤 Upload your dataset",
-        type=['csv', 'xlsx', 'txt', 'json', 'jpg', 'png', 'jpeg', 'parquet'],
-        help="Supported formats: CSV, Excel, Images, Text, JSON, Parquet"
+        type=['csv', 'xlsx', 'parquet'],
+        help="Upload CSV, Excel, or Parquet files for analysis"
     )
     
     if uploaded_file is not None:
@@ -338,59 +472,36 @@ def main():
             tmp_path = tmp_file.name
         
         try:
-            with st.spinner("📊 Analyzing dataset structure..."):
-                analysis = analyze_file_with_llm(tmp_path)
-            
-            # Display basic file info
-            st.subheader("📄 File Overview")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("File Type", analysis['data_type'].upper())
-            with col2:
-                st.metric("File Size", f"{analysis['file_size_mb']:.2f} MB")
-            with col3:
-                st.metric("Rows", f"{analysis['shape'][0]:,}")
-            with col4:
-                st.metric("Columns", analysis['shape'][1])
-            
-            # Data preview
-            st.subheader("🔍 Data Preview")
-            st.dataframe(analysis.get('sample_data', pd.DataFrame()), use_container_width=True)
-            
-            # LLM Analysis Section
-            st.subheader("🧠 AI-Powered Analysis")
-            
-            if llm_analyzer.model_type or llm_choice == "Local Fallback":
-                with st.spinner("🤖 AI is analyzing your data and generating intelligent recommendations..."):
-                    llm_analysis = llm_analyzer.analyze_with_llm(
-                        analysis.get('data_summary', 'No data summary available'),
-                        analysis['file_name']
-                    )
+            with st.spinner("🔍 Performing technical analysis..."):
+                file_info = analyze_file(tmp_path)
                 
-                st.markdown(llm_analysis)
+                if 'error' in file_info:
+                    st.error(f"Error reading file: {file_info['error']}")
+                    return
                 
-                # Add user feedback
-                st.markdown("---")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("👍 Helpful Analysis"):
-                        st.success("Thanks for your feedback! 🎉")
-                with col2:
-                    if st.button("👎 Needs Improvement"):
-                        st.info("We'll work on improving the analysis! 📈")
-            
-            else:
-                st.warning("""
-                **⚠️ No AI Model Configured**
+                # Create technical analysis
+                technical_analysis = data_engineer._create_technical_analysis(file_info['df'], file_info)
                 
-                Please configure an AI model in the sidebar to get intelligent, dataset-specific recommendations.
+                # Display technical dashboard
+                create_technical_dashboard(technical_analysis)
                 
-                Currently showing basic analysis only.
-                """)
+                # LLM Analysis
+                st.subheader("🧠 AI Data Engineering Analysis")
                 
-                # Show basic data summary
-                st.subheader("📊 Basic Data Summary")
-                st.text(analysis.get('data_summary', 'No data available for analysis'))
+                if data_engineer.model_loaded:
+                    with st.spinner("🤖 Data Engineer AI is analyzing your data..."):
+                        llm_analysis = data_engineer.analyze_as_data_engineer(file_info['df'], file_info)
+                    
+                    st.markdown(llm_analysis)
+                else:
+                    st.warning("""
+                    **⚠️ Hugging Face Model Not Loaded**
+                    
+                    Please configure your Hugging Face token and load a model in the sidebar to get AI-powered data engineering analysis.
+                    """)
+                    
+                    # Show fallback analysis
+                    st.markdown(data_engineer._fallback_technical_analysis(technical_analysis))
         
         except Exception as e:
             st.error(f"Error analyzing file: {str(e)}")
@@ -401,28 +512,30 @@ def main():
                 pass
     
     else:
-        # Demo and instructions
-        st.info("👆 Upload a dataset to get started!")
+        st.info("👆 Upload a dataset to get data engineering analysis!")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🚀 How It Works")
+            st.subheader("🎯 What You'll Get")
             st.markdown("""
-            1. **Configure AI** - Choose your preferred LLM in sidebar
-            2. **Upload Data** - Any CSV, Excel, or other format
-            3. **Get Analysis** - AI provides intelligent recommendations
-            4. **Implement** - Use the insights for your projects
+            - **Data Quality Score** and issues
+            - **Storage Optimization** strategies  
+            - **Memory Usage** analysis
+            - **Data Type** optimization
+            - **Pipeline Design** considerations
+            - **Scalability** assessment
             """)
         
         with col2:
-            st.subheader("🎯 What You Get")
+            st.subheader("🔧 Technical Focus")
             st.markdown("""
-            - **Problem Type Detection** - Classification, regression, etc.
-            - **Model Recommendations** - Specific to your data
-            - **Preprocessing Steps** - Customized for your dataset
-            - **Business Applications** - Practical use cases
-            - **Challenge Identification** - Potential issues to watch for
+            - **Null Value Analysis**
+            - **Cardinality Assessment** 
+            - **Outlier Detection**
+            - **Skewness Analysis**
+            - **Memory Optimization**
+            - **Data Type Recommendations**
             """)
 
 if __name__ == "__main__":
