@@ -1,4 +1,4 @@
-# hf_powered_analyzer.py
+# lightweight_hf_analyzer.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,49 +9,54 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-# Hugging Face imports
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
-import torch
-from huggingface_hub import login
+# Lightweight Hugging Face imports
+try:
+    from transformers import pipeline
+    from huggingface_hub import login
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
 
 # Set page config
 st.set_page_config(
-    page_title="HF-Powered Data Analyzer",
-    page_icon="🤗", 
+    page_title="Lightweight HF Analyzer",
+    page_icon="⚡", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-class HFAnalyzer:
+class LightweightHFAnalyzer:
     def __init__(self):
         self.models = {
-            "Zephyr-7B-Beta": "HuggingFaceH4/zephyr-7b-beta",
-            "Mistral-7B-Instruct": "mistralai/Mistral-7B-Instruct-v0.2", 
-            "Phi-2": "microsoft/phi-2",
-            "CodeLlama-7B": "codellama/CodeLlama-7b-Instruct-hf"
+            "TinyLlama-1.1B": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",  # Very small, fast loading
+            "DistilGPT2": "distilgpt2",  # Smallest option
+            "OPT-350M": "facebook/opt-350m"  # Good balance
         }
         self.pipeline = None
         self.model_loaded = False
         self.current_model = None
     
     def setup_huggingface(self, hf_token, model_choice):
-        """Setup Hugging Face with the chosen model"""
+        """Setup Hugging Face with lightweight model"""
         try:
+            if not HF_AVAILABLE:
+                st.error("🤗 Hugging Face not available. Please check dependencies.")
+                return False
+            
             # Login to Hugging Face
             login(token=hf_token)
             
             model_name = self.models[model_choice]
-            st.info(f"🔄 Loading {model_choice}... This may take 2-3 minutes.")
+            st.info(f"🔄 Loading {model_choice}... This should be fast!")
             
-            # Load with quantization to save memory
+            # Use a smaller, faster model with minimal settings
             self.pipeline = pipeline(
                 "text-generation",
                 model=model_name,
-                torch_dtype=torch.float16,
+                torch_dtype="auto",
                 device_map="auto",
                 trust_remote_code=True,
-                load_in_8bit=True,  # Reduce memory usage
-                max_length=2048
+                max_length=1024  # Shorter responses for speed
             )
             
             self.model_loaded = True
@@ -60,27 +65,23 @@ class HFAnalyzer:
             
         except Exception as e:
             st.error(f"❌ Failed to load model: {str(e)}")
+            st.info("💡 Try using 'DistilGPT2' - it's the smallest and fastest option.")
             return False
     
-    def analyze_with_hf(self, df, filename, analysis_type="comprehensive"):
-        """Use Hugging Face model to analyze dataset"""
+    def quick_analyze(self, df, filename):
+        """Quick analysis using HF model with optimized prompts"""
         
-        # First create a detailed data summary
-        data_summary = self._create_detailed_summary(df, filename)
+        # Create optimized data summary (shorter for token efficiency)
+        data_summary = self._create_optimized_summary(df, filename)
         
-        # Generate prompt based on analysis type
-        if analysis_type == "comprehensive":
-            prompt = self._create_comprehensive_prompt(data_summary, filename)
-        elif analysis_type == "data_engineering":
-            prompt = self._create_data_engineering_prompt(data_summary, filename)
-        elif analysis_type == "business_insights":
-            prompt = self._create_business_prompt(data_summary, filename)
+        # Use shorter, more focused prompts
+        prompt = self._create_quick_prompt(data_summary, filename)
         
         try:
-            # Generate analysis using HF model
+            # Quick generation with lower token count
             response = self.pipeline(
                 prompt,
-                max_new_tokens=1024,
+                max_new_tokens=512,  # Shorter response
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.9,
@@ -90,290 +91,183 @@ class HFAnalyzer:
             return response[0]['generated_text']
             
         except Exception as e:
-            return f"❌ HF Analysis failed: {str(e)}\n\n{self._fallback_analysis(data_summary)}"
+            return f"❌ Quick analysis failed: {str(e)}\n\n{self._smart_fallback_analysis(df, filename)}"
     
-    def _create_detailed_summary(self, df, filename):
-        """Create comprehensive data summary for HF model"""
-        summary = f"""
-DATASET: {filename}
-SHAPE: {df.shape[0]} rows, {df.shape[1]} columns
-MEMORY_USAGE: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB
-
-COLUMN_ANALYSIS:
-"""
+    def _create_optimized_summary(self, df, filename):
+        """Create optimized data summary for faster processing"""
+        summary = f"DATA: {filename}, Shape: {df.shape}, Memory: {df.memory_usage(deep=True).sum() / 1024 / 1024:.1f}MB\n"
         
-        # Detailed column analysis
-        for i, col in enumerate(df.columns):
+        # Column summary (limited)
+        summary += "COLUMNS:\n"
+        for i, col in enumerate(df.columns[:8]):  # Limit to 8 columns
             dtype = str(df[col].dtype)
-            null_count = df[col].isnull().sum()
-            null_pct = (null_count / len(df)) * 100
-            unique_count = df[col].nunique()
-            unique_pct = (unique_count / len(df)) * 100
+            null_pct = (df[col].isnull().sum() / len(df)) * 100
+            unique_pct = (df[col].nunique() / len(df)) * 100
             
-            summary += f"\nCOLUMN {i+1}: {col}"
-            summary += f"\n  - Data Type: {dtype}"
-            summary += f"\n  - Null Values: {null_count} ({null_pct:.1f}%)"
-            summary += f"\n  - Unique Values: {unique_count} ({unique_pct:.1f}%)"
-            
-            # Add sample values for first few rows
-            if i < 10:  # Limit to first 10 columns to avoid token limits
-                sample_vals = df[col].dropna().head(3).tolist()
-                summary += f"\n  - Sample: {sample_vals}"
+            summary += f"- {col}: {dtype}, nulls: {null_pct:.1f}%, unique: {unique_pct:.1f}%\n"
         
-        # Statistical summary for numeric columns
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0:
-            summary += f"\n\nNUMERIC_FEATURES: {len(numeric_cols)} columns"
-            for col in numeric_cols[:5]:  # Limit to first 5 numeric columns
-                stats = df[col].describe()
-                summary += f"\n- {col}: mean={stats['mean']:.2f}, min={stats['min']:.2f}, max={stats['max']:.2f}"
+        # Quick patterns
+        numeric_count = len(df.select_dtypes(include=[np.number]).columns)
+        categorical_count = len(df.select_dtypes(include=['object']).columns)
         
-        # Categorical analysis
-        categorical_cols = df.select_dtypes(include=['object']).columns
-        if len(categorical_cols) > 0:
-            summary += f"\n\nCATEGORICAL_FEATURES: {len(categorical_cols)} columns"
-            for col in categorical_cols[:3]:  # Limit to first 3 categorical columns
-                top_values = df[col].value_counts().head(3)
-                summary += f"\n- {col}: Top values: {dict(top_values)}"
+        summary += f"\nPATTERNS: Numeric: {numeric_count}, Categorical: {categorical_count}\n"
         
-        # Data quality issues
-        quality_issues = []
+        # Critical issues only
+        critical_issues = []
         for col in df.columns:
             null_pct = (df[col].isnull().sum() / len(df)) * 100
             if null_pct > 50:
-                quality_issues.append(f"CRITICAL: {col} has {null_pct:.1f}% null values")
-            elif null_pct > 20:
-                quality_issues.append(f"WARNING: {col} has {null_pct:.1f}% null values")
+                critical_issues.append(f"{col}({null_pct:.1f}% null)")
         
-        if quality_issues:
-            summary += f"\n\nDATA_QUALITY_ISSUES:"
-            for issue in quality_issues[:5]:
-                summary += f"\n- {issue}"
+        if critical_issues:
+            summary += f"ISSUES: {', '.join(critical_issues[:3])}\n"
         
         return summary
     
-    def _create_comprehensive_prompt(self, data_summary, filename):
-        """Create prompt for comprehensive analysis"""
-        return f"""<|system|>
-You are an expert data scientist and data engineer with deep experience in analyzing diverse datasets. 
-Provide a comprehensive, technical analysis of the following dataset.
-
-Focus on:
-1. DATA CHARACTERISTICS - What type of dataset is this? What patterns do you see?
-2. DATA QUALITY ASSESSMENT - Specific issues and their severity
-3. BUSINESS CONTEXT - What domain does this data likely belong to?
-4. TECHNICAL RECOMMENDATIONS - Specific, actionable advice for data engineering
-5. MACHINE LEARNING OPPORTUNITIES - What modeling approaches would work well?
-
-Be extremely specific to THIS dataset. Reference actual column names, data types, and patterns you observe.
-Avoid generic advice - every recommendation should be tied to the actual data characteristics.
-</|system|>
-<|user|>
-Please analyze this dataset and provide comprehensive recommendations:
+    def _create_quick_prompt(self, data_summary, filename):
+        """Create quick, focused prompt"""
+        return f"""Analyze this dataset briefly:
 
 {data_summary}
 
-Provide a detailed analysis with specific recommendations for this particular dataset.
-</|user|>
-<|assistant|>
-## 🎯 COMPREHENSIVE ANALYSIS OF {filename}
+Provide 3-4 specific recommendations for data quality, storage, and analysis. Be concise and focus on the most important issues.
+"""
+    
+    def _smart_fallback_analysis(self, df, filename):
+        """Smart fallback analysis without HF"""
+        analysis = f"""
+## ⚡ Quick Analysis of {filename}
 
 **Dataset Overview:**
+- **Size**: {df.shape[0]:,} rows × {df.shape[1]} columns
+- **Memory**: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB
+- **Types**: {len(df.select_dtypes(include=[np.number]).columns)} numeric, {len(df.select_dtypes(include=['object']).columns)} categorical
+
+**Key Findings:**
 """
-    
-    def _create_data_engineering_prompt(self, data_summary, filename):
-        """Create prompt for data engineering focused analysis"""
-        return f"""<|system|>
-You are a senior data engineer specializing in data quality, storage optimization, and pipeline design.
-Analyze this dataset from a data engineering perspective and provide specific, technical recommendations.
-
-Focus on:
-1. STORAGE OPTIMIZATION - Data type conversions, compression strategies
-2. DATA QUALITY - Null value handling, data validation rules
-3. PROCESSING STRATEGY - Batch vs streaming, distributed computing needs
-4. PIPELINE DESIGN - ETL/ELT recommendations, monitoring strategies
-5. SCALABILITY - Performance considerations for current and future scale
-
-Provide concrete, actionable recommendations with specific column-level suggestions.
-</|system|>
-<|user|>
-Analyze this dataset for data engineering optimization:
-
-{data_summary}
-
-Provide specific data engineering recommendations for storage, processing, and quality.
-</|user|>
-<|assistant|>
-## 🔧 DATA ENGINEERING ANALYSIS FOR {filename}
-
-**Technical Assessment:**
+        
+        # Auto-detect patterns
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        
+        if len(numeric_cols) > len(categorical_cols):
+            analysis += "- **Numeric-rich dataset** - Good for regression and clustering\n"
+        else:
+            analysis += "- **Categorical-rich dataset** - Good for classification and segmentation\n"
+        
+        # Critical issues
+        critical_issues = []
+        for col in df.columns:
+            null_pct = (df[col].isnull().sum() / len(df)) * 100
+            if null_pct > 50:
+                critical_issues.append(col)
+        
+        if critical_issues:
+            analysis += f"- **Critical**: {len(critical_issues)} columns with >50% null values\n"
+        
+        analysis += """
+**Recommendations:**
+1. Address data quality issues first
+2. Optimize data types for memory efficiency  
+3. Choose models based on data characteristics
+4. Implement proper validation strategy
 """
-    
-    def _create_business_prompt(self, data_summary, filename):
-        """Create prompt for business insights analysis"""
-        return f"""<|system|>
-You are a business intelligence expert and data strategist. 
-Analyze this dataset to extract business insights and identify opportunities.
-
-Focus on:
-1. BUSINESS DOMAIN - What industry/domain does this data represent?
-2. KEY METRICS - What are the important business metrics in this data?
-3. INSIGHTS - What patterns could drive business decisions?
-4. OPPORTUNITIES - What business problems could this data solve?
-5. RECOMMENDATIONS - Specific business actions based on data patterns
-
-Connect data patterns to real business value and decisions.
-</|system|>
-<|user|>
-Extract business insights from this dataset:
-
-{data_summary}
-
-What business value can be derived from this data? What decisions can it inform?
-</|user|>
-<|assistant|>
-## 💼 BUSINESS INTELLIGENCE ANALYSIS FOR {filename}
-
-**Business Context:**
-"""
-    
-    def _fallback_analysis(self, data_summary):
-        """Fallback analysis when HF model fails"""
-        return f"""
-## 🤖 Basic Analysis (HF Model Unavailable)
-
-**Note**: This is a basic analysis. For intelligent, AI-powered insights, please load a Hugging Face model.
-
-**Data Summary**:
-{data_summary}
-
-**General Recommendations**:
-- Conduct exploratory data analysis to understand patterns
-- Address data quality issues before modeling
-- Consider both statistical and machine learning approaches
-"""
+        
+        return analysis
 
 # Initialize analyzer
-hf_analyzer = HFAnalyzer()
+analyzer = LightweightHFAnalyzer()
 
-def analyze_dataset_structure(df, filename):
-    """Perform basic dataset structure analysis"""
-    analysis = {
+def quick_dataset_analysis(df, filename):
+    """Quick dataset analysis"""
+    return {
         'filename': filename,
         'shape': df.shape,
-        'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024 / 1024,
-        'total_columns': len(df.columns),
-        'total_rows': len(df),
-        'numeric_columns': len(df.select_dtypes(include=[np.number]).columns),
-        'categorical_columns': len(df.select_dtypes(include=['object']).columns),
-        'datetime_columns': len([col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]),
-        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        'memory_mb': df.memory_usage(deep=True).sum() / 1024 / 1024,
+        'numeric_cols': len(df.select_dtypes(include=[np.number]).columns),
+        'categorical_cols': len(df.select_dtypes(include=['object']).columns),
+        'total_nulls': df.isnull().sum().sum(),
+        'null_columns': [col for col in df.columns if df[col].isnull().sum() > 0]
     }
-    
-    # Basic data quality metrics
-    null_analysis = {}
-    for col in df.columns:
-        null_pct = (df[col].isnull().sum() / len(df)) * 100
-        if null_pct > 0:
-            null_analysis[col] = null_pct
-    
-    analysis['null_analysis'] = null_analysis
-    analysis['total_null_columns'] = len(null_analysis)
-    analysis['high_null_columns'] = len([pct for pct in null_analysis.values() if pct > 20])
-    
-    return analysis
 
-def create_analysis_dashboard(analysis, hf_analysis):
-    """Create interactive dashboard for analysis results"""
+def create_fast_dashboard(analysis, hf_analysis):
+    """Create fast-loading dashboard"""
     
-    st.subheader("📊 Dataset Overview")
+    st.subheader("📊 Quick Stats")
     
-    # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Rows", f"{analysis['shape'][0]:,}")
+        st.metric("Rows", f"{analysis['shape'][0]:,}")
     with col2:
-        st.metric("Total Columns", analysis['shape'][1])
+        st.metric("Columns", analysis['shape'][1])
     with col3:
-        st.metric("Memory Usage", f"{analysis['memory_usage_mb']:.2f} MB")
+        st.metric("Memory", f"{analysis['memory_mb']:.1f} MB")
     with col4:
-        st.metric("Data Quality", f"{100 - analysis['high_null_columns']}/{analysis['total_columns']}")
+        st.metric("Null Columns", len(analysis['null_columns']))
     
-    # Column type distribution
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Numeric Columns", analysis['numeric_columns'])
-    with col2:
-        st.metric("Categorical Columns", analysis['categorical_columns'])
-    with col3:
-        st.metric("DateTime Columns", analysis['datetime_columns'])
+    # Quick insights
+    with st.expander("🔍 Quick Insights", expanded=True):
+        st.write(f"**Numeric Columns**: {analysis['numeric_cols']}")
+        st.write(f"**Categorical Columns**: {analysis['categorical_cols']}")
+        
+        if analysis['null_columns']:
+            st.warning(f"**Columns with nulls**: {', '.join(analysis['null_columns'][:3])}")
+        else:
+            st.success("✅ No null values detected")
     
-    # Data quality visualization
-    if analysis['null_analysis']:
-        with st.expander("📉 Null Value Analysis", expanded=True):
-            null_df = pd.DataFrame({
-                'Column': list(analysis['null_analysis'].keys()),
-                'Null_Percentage': list(analysis['null_analysis'].values())
-            }).sort_values('Null_Percentage', ascending=False)
-            
-            fig = px.bar(null_df.head(10), x='Column', y='Null_Percentage',
-                        title='Top 10 Columns with Highest Null Percentages',
-                        color='Null_Percentage')
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Hugging Face Analysis Results
-    st.subheader("🤗 AI-Powered Analysis")
+    # HF Analysis
+    st.subheader("🤗 AI Analysis")
     st.markdown(hf_analysis)
     
-    # Model information
-    if hf_analyzer.model_loaded:
-        st.info(f"**Analysis generated using**: {hf_analyzer.current_model}")
+    if analyzer.model_loaded:
+        st.success(f"✅ Analysis powered by {analyzer.current_model}")
 
 def main():
-    st.title("🤗 Hugging Face Powered Data Analyzer")
-    st.markdown("Get **intelligent, AI-powered analysis** using state-of-the-art Hugging Face models")
+    st.title("⚡ Lightweight HF Data Analyzer")
+    st.markdown("**Fast, AI-powered analysis with lightweight Hugging Face models**")
     
-    # Sidebar for Hugging Face configuration
+    # Sidebar
     with st.sidebar:
-        st.header("🤗 Hugging Face Setup")
+        st.header("⚙️ Quick Setup")
         
-        hf_token = st.text_input("Enter Hugging Face Token", type="password", 
-                               help="Get your token from https://huggingface.co/settings/tokens")
+        hf_token = st.text_input("HF Token (optional)", type="password",
+                               help="Required for model loading. Get from huggingface.co/settings/tokens")
         
-        model_choice = st.selectbox(
-            "Choose Model",
-            list(hf_analyzer.models.keys()),
-            help="Zephyr-7B: Good balance of speed and capability\nMistral-7B: Excellent for reasoning\nPhi-2: Fastest, good for basic analysis"
-        )
+        if HF_AVAILABLE:
+            model_choice = st.selectbox(
+                "Choose Model",
+                list(analyzer.models.keys()),
+                index=1,  # Default to DistilGPT2
+                help="DistilGPT2: Fastest, OPT-350M: Better quality, TinyLlama: Balanced"
+            )
+        else:
+            st.warning("🤗 Hugging Face not available")
+            model_choice = "DistilGPT2"
         
-        analysis_type = st.selectbox(
-            "Analysis Type",
-            ["comprehensive", "data_engineering", "business_insights"],
-            help="Comprehensive: Full analysis\nData Engineering: Technical focus\nBusiness Insights: Business value focus"
-        )
-        
-        if st.button("🚀 Load HF Model"):
-            if hf_token:
-                with st.spinner("Loading Hugging Face model..."):
-                    if hf_analyzer.setup_huggingface(hf_token, model_choice):
-                        st.success(f"✅ {model_choice} loaded successfully!")
-            else:
-                st.error("Please enter your Hugging Face token")
+        if st.button("🚀 Load Model") and hf_token:
+            with st.spinner("Loading lightweight model..."):
+                if analyzer.setup_huggingface(hf_token, model_choice):
+                    st.success("Model loaded!")
         
         st.markdown("---")
         st.markdown("""
-        **🎯 Powered by:**
-        - **Zephyr-7B-Beta**: Fine-tuned Mistral, excellent for instruction following
-        - **Mistral-7B**: Strong reasoning capabilities
-        - **Phi-2**: Microsoft's compact model, fast inference
-        - **CodeLlama-7B**: Specialized in technical analysis
+        **⚡ Lightweight Models:**
+        - **DistilGPT2**: 82M params, very fast
+        - **TinyLlama**: 1.1B params, good balance  
+        - **OPT-350M**: 350M params, better quality
+        
+        **🎯 Perfect for:**
+        - Quick analysis
+        - Data quality checks
+        - Storage optimization
+        - Model recommendations
         """)
     
-    # File upload
+    # File upload - simplified
     uploaded_file = st.file_uploader(
-        "📤 Upload your dataset",
-        type=['csv', 'xlsx', 'parquet'],
-        help="CSV, Excel, or Parquet files supported"
+        "📤 Upload CSV/Excel",
+        type=['csv', 'xlsx'],
+        help="Upload your dataset for quick analysis"
     )
     
     if uploaded_file is not None:
@@ -382,37 +276,32 @@ def main():
             tmp_path = tmp_file.name
         
         try:
-            # Read the file
+            # Quick file reading
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(tmp_path)
-            elif uploaded_file.name.endswith('.xlsx'):
+            else:
                 df = pd.read_excel(tmp_path)
-            else:
-                df = pd.read_csv(tmp_path)
             
-            # Perform basic analysis
-            with st.spinner("📊 Analyzing dataset structure..."):
-                basic_analysis = analyze_dataset_structure(df, uploaded_file.name)
-            
-            # Hugging Face Analysis
-            if hf_analyzer.model_loaded:
-                with st.spinner("🤖 AI is analyzing your data with Hugging Face model..."):
-                    hf_analysis = hf_analyzer.analyze_with_hf(df, uploaded_file.name, analysis_type)
-            else:
-                hf_analysis = hf_analyzer._fallback_analysis(hf_analyzer._create_detailed_summary(df, uploaded_file.name))
-                st.warning("⚠️ Using basic analysis - Load a Hugging Face model for AI-powered insights")
+            # Quick analysis
+            with st.spinner("⚡ Quick analysis..."):
+                basic_analysis = quick_dataset_analysis(df, uploaded_file.name)
+                
+                if analyzer.model_loaded:
+                    hf_analysis = analyzer.quick_analyze(df, uploaded_file.name)
+                else:
+                    hf_analysis = analyzer._smart_fallback_analysis(df, uploaded_file.name)
+                    if not analyzer.model_loaded:
+                        st.info("💡 Load a model in sidebar for AI-powered analysis")
             
             # Display results
-            create_analysis_dashboard(basic_analysis, hf_analysis)
+            create_fast_dashboard(basic_analysis, hf_analysis)
             
-            # Data preview
-            with st.expander("🔍 Data Preview", expanded=False):
-                st.dataframe(df.head(10), use_container_width=True)
-                st.write(f"**Full Dataset**: {basic_analysis['shape'][0]:,} rows × {basic_analysis['shape'][1]} columns")
-                st.write(f"**Analysis Time**: {basic_analysis['timestamp']}")
+            # Quick preview
+            with st.expander("👀 Data Preview", expanded=False):
+                st.dataframe(df.head(5), use_container_width=True)
         
         except Exception as e:
-            st.error(f"Error analyzing file: {str(e)}")
+            st.error(f"Error: {str(e)}")
         finally:
             try:
                 os.unlink(tmp_path)
@@ -420,27 +309,28 @@ def main():
                 pass
     
     else:
-        st.info("👆 Upload a dataset and configure Hugging Face to get AI-powered analysis!")
+        # Simple landing page
+        st.info("👆 Upload a CSV or Excel file for quick analysis!")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🚀 How It Works")
+            st.subheader("🚀 Fast & Light")
             st.markdown("""
-            1. **Configure HF** - Enter token & choose model in sidebar
-            2. **Upload Data** - Any CSV, Excel, or Parquet file
-            3. **Get AI Analysis** - HF model provides intelligent insights
-            4. **Implement** - Use specific, data-driven recommendations
+            - **Quick model loading** (seconds, not minutes)
+            - **Lightweight analysis** 
+            - **Fast responses**
+            - **Streamlit Cloud compatible**
             """)
         
         with col2:
-            st.subheader("🎯 What You Get")
+            st.subheader("🎯 Smart Analysis")
             st.markdown("""
-            - **AI-Powered Insights** - Not rule-based templates
-            - **Dataset-Specific** - Unique analysis for each file
-            - **Technical Depth** - Data engineering expertise
-            - **Business Context** - Domain-aware recommendations
-            - **Actionable Advice** - Specific, implementable steps
+            - **Data quality assessment**
+            - **Storage optimization**
+            - **Model recommendations**
+            - **Pattern detection**
+            - **Actionable insights**
             """)
 
 if __name__ == "__main__":
