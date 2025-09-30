@@ -1,482 +1,379 @@
-# universal_data_analyzer_fast.py
+# hf_powered_analyzer.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import os
 import tempfile
 import plotly.express as px
+from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
+# Hugging Face imports
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+import torch
+from huggingface_hub import login
+
 # Set page config
 st.set_page_config(
-    page_title="Data Engineer's Analyzer",
-    page_icon="🔧", 
+    page_title="HF-Powered Data Analyzer",
+    page_icon="🤗", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-class FastDataEngineer:
+class HFAnalyzer:
     def __init__(self):
-        self.analysis_ready = False
+        self.models = {
+            "Zephyr-7B-Beta": "HuggingFaceH4/zephyr-7b-beta",
+            "Mistral-7B-Instruct": "mistralai/Mistral-7B-Instruct-v0.2", 
+            "Phi-2": "microsoft/phi-2",
+            "CodeLlama-7B": "codellama/CodeLlama-7b-Instruct-hf"
+        }
+        self.pipeline = None
+        self.model_loaded = False
+        self.current_model = None
     
-    def perform_deep_analysis(self, df, file_info):
-        """Perform comprehensive data engineering analysis without LLM dependencies"""
-        
-        analysis = self._create_comprehensive_analysis(df, file_info)
-        recommendations = self._generate_data_engineer_recommendations(analysis)
-        
-        return analysis, recommendations
+    def setup_huggingface(self, hf_token, model_choice):
+        """Setup Hugging Face with the chosen model"""
+        try:
+            # Login to Hugging Face
+            login(token=hf_token)
+            
+            model_name = self.models[model_choice]
+            st.info(f"🔄 Loading {model_choice}... This may take 2-3 minutes.")
+            
+            # Load with quantization to save memory
+            self.pipeline = pipeline(
+                "text-generation",
+                model=model_name,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                trust_remote_code=True,
+                load_in_8bit=True,  # Reduce memory usage
+                max_length=2048
+            )
+            
+            self.model_loaded = True
+            self.current_model = model_choice
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Failed to load model: {str(e)}")
+            return False
     
-    def _create_comprehensive_analysis(self, df, file_info):
-        """Create detailed technical analysis"""
-        analysis = {}
+    def analyze_with_hf(self, df, filename, analysis_type="comprehensive"):
+        """Use Hugging Face model to analyze dataset"""
         
-        # Basic metrics
-        analysis['shape'] = df.shape
-        analysis['memory_usage_mb'] = df.memory_usage(deep=True).sum() / 1024 / 1024
-        analysis['file_size_mb'] = file_info['file_size_mb']
-        analysis['total_cells'] = df.shape[0] * df.shape[1]
+        # First create a detailed data summary
+        data_summary = self._create_detailed_summary(df, filename)
         
-        # Data types analysis
-        dtypes_analysis = {}
-        for col in df.columns:
+        # Generate prompt based on analysis type
+        if analysis_type == "comprehensive":
+            prompt = self._create_comprehensive_prompt(data_summary, filename)
+        elif analysis_type == "data_engineering":
+            prompt = self._create_data_engineering_prompt(data_summary, filename)
+        elif analysis_type == "business_insights":
+            prompt = self._create_business_prompt(data_summary, filename)
+        
+        try:
+            # Generate analysis using HF model
+            response = self.pipeline(
+                prompt,
+                max_new_tokens=1024,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                return_full_text=False
+            )
+            
+            return response[0]['generated_text']
+            
+        except Exception as e:
+            return f"❌ HF Analysis failed: {str(e)}\n\n{self._fallback_analysis(data_summary)}"
+    
+    def _create_detailed_summary(self, df, filename):
+        """Create comprehensive data summary for HF model"""
+        summary = f"""
+DATASET: {filename}
+SHAPE: {df.shape[0]} rows, {df.shape[1]} columns
+MEMORY_USAGE: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB
+
+COLUMN_ANALYSIS:
+"""
+        
+        # Detailed column analysis
+        for i, col in enumerate(df.columns):
             dtype = str(df[col].dtype)
-            if dtype not in dtypes_analysis:
-                dtypes_analysis[dtype] = []
-            dtypes_analysis[dtype].append({
-                'name': col,
-                'memory_usage': df[col].memory_usage(deep=True) / 1024,  # KB
-                'null_count': df[col].isnull().sum(),
-                'unique_count': df[col].nunique()
-            })
-        analysis['dtype_analysis'] = dtypes_analysis
-        
-        # Comprehensive null analysis
-        null_analysis = {}
-        total_nulls = 0
-        for col in df.columns:
             null_count = df[col].isnull().sum()
             null_pct = (null_count / len(df)) * 100
-            total_nulls += null_count
-            
-            if null_count > 0:
-                null_analysis[col] = {
-                    'count': null_count,
-                    'percentage': round(null_pct, 2),
-                    'severity': 'CRITICAL' if null_pct > 50 else 'HIGH' if null_pct > 20 else 'MEDIUM' if null_pct > 5 else 'LOW'
-                }
-        
-        analysis['null_analysis'] = null_analysis
-        analysis['total_nulls'] = total_nulls
-        analysis['null_percentage'] = (total_nulls / analysis['total_cells']) * 100
-        
-        # Advanced cardinality analysis
-        cardinality = {}
-        high_cardinality_cols = []
-        for col in df.columns:
             unique_count = df[col].nunique()
-            cardinality_pct = (unique_count / len(df)) * 100
+            unique_pct = (unique_count / len(df)) * 100
             
-            cardinality[col] = {
-                'unique_count': unique_count,
-                'cardinality_pct': round(cardinality_pct, 2),
-                'type': 'VERY_HIGH' if cardinality_pct > 95 else 'HIGH' if cardinality_pct > 70 else 'MEDIUM' if cardinality_pct > 30 else 'LOW'
-            }
+            summary += f"\nCOLUMN {i+1}: {col}"
+            summary += f"\n  - Data Type: {dtype}"
+            summary += f"\n  - Null Values: {null_count} ({null_pct:.1f}%)"
+            summary += f"\n  - Unique Values: {unique_count} ({unique_pct:.1f}%)"
             
-            if cardinality_pct > 95:
-                high_cardinality_cols.append(col)
+            # Add sample values for first few rows
+            if i < 10:  # Limit to first 10 columns to avoid token limits
+                sample_vals = df[col].dropna().head(3).tolist()
+                summary += f"\n  - Sample: {sample_vals}"
         
-        analysis['cardinality'] = cardinality
-        analysis['high_cardinality_cols'] = high_cardinality_cols
-        
-        # Statistical analysis for numeric columns
+        # Statistical summary for numeric columns
         numeric_cols = df.select_dtypes(include=[np.number]).columns
-        stats_analysis = {}
-        skewed_cols = []
-        high_variance_cols = []
+        if len(numeric_cols) > 0:
+            summary += f"\n\nNUMERIC_FEATURES: {len(numeric_cols)} columns"
+            for col in numeric_cols[:5]:  # Limit to first 5 numeric columns
+                stats = df[col].describe()
+                summary += f"\n- {col}: mean={stats['mean']:.2f}, min={stats['min']:.2f}, max={stats['max']:.2f}"
         
-        for col in numeric_cols:
-            stats = df[col].describe()
-            skewness = df[col].skew()
-            cv = (stats['std'] / abs(stats['mean'])) * 100 if stats['mean'] != 0 else float('inf')
-            
-            stats_analysis[col] = {
-                'mean': round(stats['mean'], 4),
-                'std': round(stats['std'], 4),
-                'min': round(stats['min'], 4),
-                '25%': round(stats['25%'], 4),
-                '50%': round(stats['50%'], 4),
-                '75%': round(stats['75%'], 4),
-                'max': round(stats['max'], 4),
-                'skewness': round(skewness, 4),
-                'cv': round(cv, 2),
-                'outlier_pct': self._calculate_outlier_percentage(df[col]),
-                'zeros_pct': ((df[col] == 0).sum() / len(df)) * 100
-            }
-            
-            if abs(skewness) > 2:
-                skewed_cols.append((col, skewness))
-            if cv > 200:  # Coefficient of variation > 200%
-                high_variance_cols.append((col, cv))
-        
-        analysis['numeric_stats'] = stats_analysis
-        analysis['skewed_cols'] = skewed_cols
-        analysis['high_variance_cols'] = high_variance_cols
+        # Categorical analysis
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        if len(categorical_cols) > 0:
+            summary += f"\n\nCATEGORICAL_FEATURES: {len(categorical_cols)} columns"
+            for col in categorical_cols[:3]:  # Limit to first 3 categorical columns
+                top_values = df[col].value_counts().head(3)
+                summary += f"\n- {col}: Top values: {dict(top_values)}"
         
         # Data quality issues
-        quality_issues = self._identify_data_quality_issues(df, analysis)
-        analysis['quality_issues'] = quality_issues
+        quality_issues = []
+        for col in df.columns:
+            null_pct = (df[col].isnull().sum() / len(df)) * 100
+            if null_pct > 50:
+                quality_issues.append(f"CRITICAL: {col} has {null_pct:.1f}% null values")
+            elif null_pct > 20:
+                quality_issues.append(f"WARNING: {col} has {null_pct:.1f}% null values")
         
-        # Storage optimization
-        storage_analysis = self._analyze_storage_optimization(df, analysis)
-        analysis['storage_analysis'] = storage_analysis
+        if quality_issues:
+            summary += f"\n\nDATA_QUALITY_ISSUES:"
+            for issue in quality_issues[:5]:
+                summary += f"\n- {issue}"
         
-        # Data profiling
-        analysis['data_profile'] = self._create_data_profile(df)
-        
-        return analysis
+        return summary
     
-    def _calculate_outlier_percentage(self, series):
-        """Calculate percentage of outliers using IQR method"""
-        Q1 = series.quantile(0.25)
-        Q3 = series.quantile(0.75)
-        IQR = Q3 - Q1
-        if IQR == 0:
-            return 0
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-        outliers = series[(series < lower_bound) | (series > upper_bound)]
-        return round((len(outliers) / len(series)) * 100, 2)
+    def _create_comprehensive_prompt(self, data_summary, filename):
+        """Create prompt for comprehensive analysis"""
+        return f"""<|system|>
+You are an expert data scientist and data engineer with deep experience in analyzing diverse datasets. 
+Provide a comprehensive, technical analysis of the following dataset.
+
+Focus on:
+1. DATA CHARACTERISTICS - What type of dataset is this? What patterns do you see?
+2. DATA QUALITY ASSESSMENT - Specific issues and their severity
+3. BUSINESS CONTEXT - What domain does this data likely belong to?
+4. TECHNICAL RECOMMENDATIONS - Specific, actionable advice for data engineering
+5. MACHINE LEARNING OPPORTUNITIES - What modeling approaches would work well?
+
+Be extremely specific to THIS dataset. Reference actual column names, data types, and patterns you observe.
+Avoid generic advice - every recommendation should be tied to the actual data characteristics.
+</|system|>
+<|user|>
+Please analyze this dataset and provide comprehensive recommendations:
+
+{data_summary}
+
+Provide a detailed analysis with specific recommendations for this particular dataset.
+</|user|>
+<|assistant|>
+## 🎯 COMPREHENSIVE ANALYSIS OF {filename}
+
+**Dataset Overview:**
+"""
     
-    def _identify_data_quality_issues(self, df, analysis):
-        """Identify comprehensive data quality issues"""
-        issues = []
-        
-        # Null value issues
-        for col, null_info in analysis['null_analysis'].items():
-            if null_info['severity'] == 'CRITICAL':
-                issues.append(f"🚨 CRITICAL_NULL: {col} has {null_info['percentage']}% missing values - Consider dropping or advanced imputation")
-            elif null_info['severity'] == 'HIGH':
-                issues.append(f"⚠️ HIGH_NULL: {col} has {null_info['percentage']}% missing values - Needs imputation strategy")
-            elif null_info['severity'] == 'MEDIUM':
-                issues.append(f"📊 MEDIUM_NULL: {col} has {null_info['percentage']}% missing values - Monitor and impute")
-        
-        # High cardinality issues
-        for col in analysis['high_cardinality_cols']:
-            card_info = analysis['cardinality'][col]
-            issues.append(f"🔍 HIGH_CARDINALITY: {col} has {card_info['unique_count']} unique values ({card_info['cardinality_pct']}%) - Potential ID column or data leakage")
-        
-        # Constant columns
-        constant_cols = [col for col in df.columns if df[col].nunique() <= 1]
-        for col in constant_cols:
-            issues.append(f"📊 CONSTANT_COLUMN: {col} has only {df[col].nunique()} unique value - Consider dropping")
-        
-        # Skewed distributions
-        for col, skewness in analysis['skewed_cols']:
-            issues.append(f"📈 HIGHLY_SKEWED: {col} has skewness {skewness:.2f} - Consider transformation (log, box-cox)")
-        
-        # High variance
-        for col, cv in analysis['high_variance_cols']:
-            issues.append(f"📊 HIGH_VARIANCE: {col} has coefficient of variation {cv:.0f}% - May need scaling")
-        
-        # High outlier percentage
-        for col, stats in analysis.get('numeric_stats', {}).items():
-            if stats['outlier_pct'] > 15:
-                issues.append(f"📊 HIGH_OUTLIERS: {col} has {stats['outlier_pct']}% outliers - Investigate data quality")
-        
-        # High zero percentage
-        for col, stats in analysis.get('numeric_stats', {}).items():
-            if stats['zeros_pct'] > 80:
-                issues.append(f"🔲 SPARSE_COLUMN: {col} has {stats['zeros_pct']:.1f}% zeros - Consider sparse matrix representation")
-        
-        # Memory inefficiency
-        current_memory = analysis['memory_usage_mb']
-        if current_memory > 100:  # 100MB threshold
-            issues.append(f"💾 LARGE_MEMORY: Dataset uses {current_memory:.1f} MB - Implement storage optimizations")
-        
-        return issues
+    def _create_data_engineering_prompt(self, data_summary, filename):
+        """Create prompt for data engineering focused analysis"""
+        return f"""<|system|>
+You are a senior data engineer specializing in data quality, storage optimization, and pipeline design.
+Analyze this dataset from a data engineering perspective and provide specific, technical recommendations.
+
+Focus on:
+1. STORAGE OPTIMIZATION - Data type conversions, compression strategies
+2. DATA QUALITY - Null value handling, data validation rules
+3. PROCESSING STRATEGY - Batch vs streaming, distributed computing needs
+4. PIPELINE DESIGN - ETL/ELT recommendations, monitoring strategies
+5. SCALABILITY - Performance considerations for current and future scale
+
+Provide concrete, actionable recommendations with specific column-level suggestions.
+</|system|>
+<|user|>
+Analyze this dataset for data engineering optimization:
+
+{data_summary}
+
+Provide specific data engineering recommendations for storage, processing, and quality.
+</|user|>
+<|assistant|>
+## 🔧 DATA ENGINEERING ANALYSIS FOR {filename}
+
+**Technical Assessment:**
+"""
     
-    def _analyze_storage_optimization(self, df, analysis):
-        """Analyze storage optimization opportunities"""
-        optimizations = []
-        current_memory = analysis['memory_usage_mb']
-        potential_savings = 0
-        
-        # Numeric column optimizations
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            current_dtype = str(df[col].dtype)
-            col_min = df[col].min()
-            col_max = df[col].max()
-            
-            suggested_dtype = None
-            savings_pct = 0
-            
-            if 'float' in current_dtype:
-                if col_min >= -3.4e38 and col_max <= 3.4e38:
-                    suggested_dtype = 'float32'
-                    savings_pct = 50
-                elif col_min > -65500 and col_max < 65500:
-                    suggested_dtype = 'float16'
-                    savings_pct = 75
-            elif 'int' in current_dtype:
-                if col_min >= 0:  # Unsigned
-                    if col_max < 256:
-                        suggested_dtype = 'uint8'
-                        savings_pct = 75
-                    elif col_max < 65536:
-                        suggested_dtype = 'uint16'
-                        savings_pct = 50
-                else:  # Signed
-                    if col_min > -128 and col_max < 127:
-                        suggested_dtype = 'int8'
-                        savings_pct = 75
-                    elif col_min > -32768 and col_max < 32767:
-                        suggested_dtype = 'int16'
-                        savings_pct = 50
-            
-            if suggested_dtype:
-                optimizations.append({
-                    'column': col,
-                    'current_dtype': current_dtype,
-                    'suggested_dtype': suggested_dtype,
-                    'savings_pct': savings_pct,
-                    'reason': f"Range [{col_min}, {col_max}] fits {suggested_dtype}"
-                })
-                potential_savings += savings_pct * (df[col].memory_usage(deep=True) / df.memory_usage(deep=True).sum())
-        
-        # Categorical optimizations
-        object_cols = df.select_dtypes(include=['object']).columns
-        for col in object_cols:
-            unique_ratio = df[col].nunique() / len(df)
-            if unique_ratio < 0.5:
-                current_mem = df[col].memory_usage(deep=True)
-                optimizations.append({
-                    'column': col,
-                    'current_dtype': 'object',
-                    'suggested_dtype': 'category',
-                    'savings_pct': 60,
-                    'reason': f"Low cardinality ({df[col].nunique()} unique values, {unique_ratio:.1%} uniqueness)"
-                })
-                potential_savings += 60 * (current_mem / df.memory_usage(deep=True).sum())
-        
-        total_savings_mb = current_memory * (potential_savings / 100)
-        
-        return {
-            'current_memory_mb': current_memory,
-            'potential_savings_mb': total_savings_mb,
-            'potential_savings_pct': potential_savings,
-            'optimizations': optimizations
-        }
+    def _create_business_prompt(self, data_summary, filename):
+        """Create prompt for business insights analysis"""
+        return f"""<|system|>
+You are a business intelligence expert and data strategist. 
+Analyze this dataset to extract business insights and identify opportunities.
+
+Focus on:
+1. BUSINESS DOMAIN - What industry/domain does this data represent?
+2. KEY METRICS - What are the important business metrics in this data?
+3. INSIGHTS - What patterns could drive business decisions?
+4. OPPORTUNITIES - What business problems could this data solve?
+5. RECOMMENDATIONS - Specific business actions based on data patterns
+
+Connect data patterns to real business value and decisions.
+</|system|>
+<|user|>
+Extract business insights from this dataset:
+
+{data_summary}
+
+What business value can be derived from this data? What decisions can it inform?
+</|user|>
+<|assistant|>
+## 💼 BUSINESS INTELLIGENCE ANALYSIS FOR {filename}
+
+**Business Context:**
+"""
     
-    def _create_data_profile(self, df):
-        """Create comprehensive data profile"""
-        profile = {
-            'total_columns': len(df.columns),
-            'total_rows': len(df),
-            'total_memory_mb': df.memory_usage(deep=True).sum() / 1024 / 1024,
-            'complete_cases': df.notnull().all(axis=1).sum(),
-            'complete_cases_pct': (df.notnull().all(axis=1).sum() / len(df)) * 100,
-            'duplicate_rows': df.duplicated().sum(),
-            'duplicate_rows_pct': (df.duplicated().sum() / len(df)) * 100
-        }
-        
-        # Column type counts
-        dtypes_count = df.dtypes.value_counts()
-        profile['dtype_counts'] = {str(k): v for k, v in dtypes_count.items()}
-        
-        return profile
-    
-    def _generate_data_engineer_recommendations(self, analysis):
-        """Generate detailed data engineering recommendations"""
-        
-        rec = f"""
-## 🔧 DATA ENGINEERING ANALYSIS REPORT
+    def _fallback_analysis(self, data_summary):
+        """Fallback analysis when HF model fails"""
+        return f"""
+## 🤖 Basic Analysis (HF Model Unavailable)
 
-### 📊 EXECUTIVE SUMMARY
-- **Dataset**: {analysis['shape'][0]:,} rows × {analysis['shape'][1]} columns
-- **Memory Usage**: {analysis['memory_usage_mb']:.2f} MB
-- **Data Quality Score**: {self._calculate_quality_score(analysis):.1f}/10
-- **Total Issues**: {len(analysis['quality_issues'])} identified
+**Note**: This is a basic analysis. For intelligent, AI-powered insights, please load a Hugging Face model.
 
-### 🚨 CRITICAL ISSUES (Immediate Action Required)
+**Data Summary**:
+{data_summary}
+
+**General Recommendations**:
+- Conduct exploratory data analysis to understand patterns
+- Address data quality issues before modeling
+- Consider both statistical and machine learning approaches
 """
-        
-        # Critical issues
-        critical_issues = [issue for issue in analysis['quality_issues'] if '🚨 CRITICAL' in issue]
-        if critical_issues:
-            for issue in critical_issues[:5]:
-                rec += f"- {issue}\\n"
-        else:
-            rec += "- ✅ No critical issues detected\\n"
-        
-        rec += """
-### ⚠️ HIGH PRIORITY ISSUES
-"""
-        # High priority issues
-        high_issues = [issue for issue in analysis['quality_issues'] if '⚠️ HIGH' in issue]
-        if high_issues:
-            for issue in high_issues[:5]:
-                rec += f"- {issue}\\n"
-        else:
-            rec += "- ✅ No high priority issues\\n"
-        
-        rec += f"""
-### 💾 STORAGE OPTIMIZATION
-- **Current Memory**: {analysis['storage_analysis']['current_memory_mb']:.2f} MB
-- **Potential Savings**: {analysis['storage_analysis']['potential_savings_mb']:.2f} MB ({analysis['storage_analysis']['potential_savings_pct']:.1f}%)
-- **Optimization Opportunities**: {len(analysis['storage_analysis']['optimizations'])} columns
 
-**Top Storage Optimizations:**
-"""
-        
-        # Top storage optimizations
-        for opt in analysis['storage_analysis']['optimizations'][:5]:
-            rec += f"- **{opt['column']}**: {opt['current_dtype']} → {opt['suggested_dtype']} ({opt['savings_pct']}% savings)\\n"
-        
-        rec += """
-### 📈 DATA CHARACTERISTICS
-"""
-        # Data characteristics
-        rec += f"- **Null Values**: {analysis['total_nulls']:,} total ({analysis['null_percentage']:.2f}% of data)\\n"
-        rec += f"- **High Cardinality Columns**: {len(analysis['high_cardinality_cols'])} identified\\n"
-        rec += f"- **Skewed Distributions**: {len(analysis['skewed_cols'])} numeric columns\\n"
-        rec += f"- **High Variance Columns**: {len(analysis['high_variance_cols'])} identified\\n"
-        
-        rec += """
-### 🛠️ TECHNICAL RECOMMENDATIONS
+# Initialize analyzer
+hf_analyzer = HFAnalyzer()
 
-#### 1. DATA QUALITY IMPROVEMENT
-"""
-        # Data quality recommendations
-        if analysis['null_analysis']:
-            rec += "- Implement strategic null value imputation based on column importance\\n"
-            rec += "- Consider multiple imputation techniques for critical columns\\n"
-        
-        if analysis['skewed_cols']:
-            rec += "- Apply transformations (log, box-cox) to highly skewed numeric columns\\n"
-        
-        rec += """
-#### 2. STORAGE OPTIMIZATION
-- Implement suggested data type conversions for memory reduction
-- Use categorical encoding for low-cardinality string columns
-- Consider Parquet format for better compression
-
-#### 3. PROCESSING OPTIMIZATION
-- Use chunk processing for large datasets
-- Implement lazy evaluation where possible
-- Consider distributed computing for scaling
-
-#### 4. MONITORING & GOVERNANCE
-- Set up data quality monitoring
-- Implement data validation rules
-- Create data lineage documentation
-"""
-        
-        return rec
-    
-    def _calculate_quality_score(self, analysis):
-        """Calculate data quality score (0-10)"""
-        score = 10.0
-        
-        # Penalize for null values
-        null_penalty = min(3.0, analysis['null_percentage'] / 10)
-        score -= null_penalty
-        
-        # Penalize for quality issues
-        issue_penalty = min(3.0, len(analysis['quality_issues']) * 0.1)
-        score -= issue_penalty
-        
-        # Penalize for memory inefficiency
-        if analysis['memory_usage_mb'] > 100:
-            mem_penalty = min(2.0, analysis['memory_usage_mb'] / 1000)
-            score -= mem_penalty
-        
-        return max(0, score)
-
-# Initialize the analyzer
-data_engineer = FastDataEngineer()
-
-def analyze_file(file_path):
-    """Analyze file and return basic info"""
-    file_info = {
-        'file_name': os.path.basename(file_path),
-        'file_size_mb': os.path.getsize(file_path) / (1024 * 1024),
-        'file_extension': os.path.splitext(file_path)[1],
+def analyze_dataset_structure(df, filename):
+    """Perform basic dataset structure analysis"""
+    analysis = {
+        'filename': filename,
+        'shape': df.shape,
+        'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024 / 1024,
+        'total_columns': len(df.columns),
+        'total_rows': len(df),
+        'numeric_columns': len(df.select_dtypes(include=[np.number]).columns),
+        'categorical_columns': len(df.select_dtypes(include=['object']).columns),
+        'datetime_columns': len([col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]),
+        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
-    try:
-        if file_info['file_extension'] == '.csv':
-            df = pd.read_csv(file_path)
-        elif file_info['file_extension'] == '.xlsx':
-            df = pd.read_excel(file_path)
-        else:
-            df = pd.read_csv(file_path)
-        
-        file_info['df'] = df
-        file_info['shape'] = df.shape
-        
-    except Exception as e:
-        file_info['error'] = str(e)
+    # Basic data quality metrics
+    null_analysis = {}
+    for col in df.columns:
+        null_pct = (df[col].isnull().sum() / len(df)) * 100
+        if null_pct > 0:
+            null_analysis[col] = null_pct
     
-    return file_info
+    analysis['null_analysis'] = null_analysis
+    analysis['total_null_columns'] = len(null_analysis)
+    analysis['high_null_columns'] = len([pct for pct in null_analysis.values() if pct > 20])
+    
+    return analysis
 
-def create_technical_dashboard(analysis):
-    """Create interactive technical dashboard"""
+def create_analysis_dashboard(analysis, hf_analysis):
+    """Create interactive dashboard for analysis results"""
     
-    st.subheader("🔧 Technical Dashboard")
+    st.subheader("📊 Dataset Overview")
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Dataset Shape", f"{analysis['shape'][0]:,} × {analysis['shape'][1]}")
+        st.metric("Total Rows", f"{analysis['shape'][0]:,}")
     with col2:
-        st.metric("Memory Usage", f"{analysis['memory_usage_mb']:.2f} MB")
+        st.metric("Total Columns", analysis['shape'][1])
     with col3:
-        st.metric("Data Quality", f"{data_engineer._calculate_quality_score(analysis):.1f}/10")
+        st.metric("Memory Usage", f"{analysis['memory_usage_mb']:.2f} MB")
     with col4:
-        st.metric("Total Issues", len(analysis['quality_issues']))
+        st.metric("Data Quality", f"{100 - analysis['high_null_columns']}/{analysis['total_columns']}")
     
-    # Data Quality Issues
-    with st.expander("🚨 Data Quality Issues", expanded=True):
-        if analysis['quality_issues']:
-            for issue in analysis['quality_issues'][:10]:
-                st.write(issue)
-        else:
-            st.success("✅ No data quality issues detected")
+    # Column type distribution
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Numeric Columns", analysis['numeric_columns'])
+    with col2:
+        st.metric("Categorical Columns", analysis['categorical_columns'])
+    with col3:
+        st.metric("DateTime Columns", analysis['datetime_columns'])
     
-    # Storage Optimization
-    with st.expander("💾 Storage Optimization", expanded=True):
-        st.metric("Potential Savings", 
-                 f"{analysis['storage_analysis']['potential_savings_mb']:.2f} MB",
-                 f"{analysis['storage_analysis']['potential_savings_pct']:.1f}%")
-        
-        if analysis['storage_analysis']['optimizations']:
-            st.write("**Top Optimization Opportunities:**")
-            for opt in analysis['storage_analysis']['optimizations'][:5]:
-                st.write(f"- **{opt['column']}**: {opt['current_dtype']} → {opt['suggested_dtype']} ({opt['savings_pct']}% savings)")
-    
-    # Data Types Distribution
-    with st.expander("📊 Data Types Analysis", expanded=False):
-        dtype_data = []
-        for dtype, cols in analysis['dtype_analysis'].items():
-            dtype_data.append({'Type': dtype, 'Count': len(cols)})
-        
-        if dtype_data:
-            dtype_df = pd.DataFrame(dtype_data)
-            fig = px.pie(dtype_df, values='Count', names='Type', title='Data Type Distribution')
+    # Data quality visualization
+    if analysis['null_analysis']:
+        with st.expander("📉 Null Value Analysis", expanded=True):
+            null_df = pd.DataFrame({
+                'Column': list(analysis['null_analysis'].keys()),
+                'Null_Percentage': list(analysis['null_analysis'].values())
+            }).sort_values('Null_Percentage', ascending=False)
+            
+            fig = px.bar(null_df.head(10), x='Column', y='Null_Percentage',
+                        title='Top 10 Columns with Highest Null Percentages',
+                        color='Null_Percentage')
             st.plotly_chart(fig, use_container_width=True)
+    
+    # Hugging Face Analysis Results
+    st.subheader("🤗 AI-Powered Analysis")
+    st.markdown(hf_analysis)
+    
+    # Model information
+    if hf_analyzer.model_loaded:
+        st.info(f"**Analysis generated using**: {hf_analyzer.current_model}")
 
 def main():
-    st.title("🔧 Data Engineer's Analyzer")
-    st.markdown("**Fast, comprehensive data engineering analysis without model dependencies**")
+    st.title("🤗 Hugging Face Powered Data Analyzer")
+    st.markdown("Get **intelligent, AI-powered analysis** using state-of-the-art Hugging Face models")
+    
+    # Sidebar for Hugging Face configuration
+    with st.sidebar:
+        st.header("🤗 Hugging Face Setup")
+        
+        hf_token = st.text_input("Enter Hugging Face Token", type="password", 
+                               help="Get your token from https://huggingface.co/settings/tokens")
+        
+        model_choice = st.selectbox(
+            "Choose Model",
+            list(hf_analyzer.models.keys()),
+            help="Zephyr-7B: Good balance of speed and capability\nMistral-7B: Excellent for reasoning\nPhi-2: Fastest, good for basic analysis"
+        )
+        
+        analysis_type = st.selectbox(
+            "Analysis Type",
+            ["comprehensive", "data_engineering", "business_insights"],
+            help="Comprehensive: Full analysis\nData Engineering: Technical focus\nBusiness Insights: Business value focus"
+        )
+        
+        if st.button("🚀 Load HF Model"):
+            if hf_token:
+                with st.spinner("Loading Hugging Face model..."):
+                    if hf_analyzer.setup_huggingface(hf_token, model_choice):
+                        st.success(f"✅ {model_choice} loaded successfully!")
+            else:
+                st.error("Please enter your Hugging Face token")
+        
+        st.markdown("---")
+        st.markdown("""
+        **🎯 Powered by:**
+        - **Zephyr-7B-Beta**: Fine-tuned Mistral, excellent for instruction following
+        - **Mistral-7B**: Strong reasoning capabilities
+        - **Phi-2**: Microsoft's compact model, fast inference
+        - **CodeLlama-7B**: Specialized in technical analysis
+        """)
     
     # File upload
     uploaded_file = st.file_uploader(
         "📤 Upload your dataset",
         type=['csv', 'xlsx', 'parquet'],
-        help="Upload CSV, Excel, or Parquet files for analysis"
+        help="CSV, Excel, or Parquet files supported"
     )
     
     if uploaded_file is not None:
@@ -485,26 +382,34 @@ def main():
             tmp_path = tmp_file.name
         
         try:
-            with st.spinner("🔍 Performing deep data engineering analysis..."):
-                file_info = analyze_file(tmp_path)
-                
-                if 'error' in file_info:
-                    st.error(f"Error reading file: {file_info['error']}")
-                    return
-                
-                # Perform comprehensive analysis
-                analysis, recommendations = data_engineer.perform_deep_analysis(file_info['df'], file_info)
-                
-                # Display technical dashboard
-                create_technical_dashboard(analysis)
-                
-                # Display detailed recommendations
-                st.subheader("📋 Data Engineering Recommendations")
-                st.markdown(recommendations)
-                
-                # Show sample data
-                with st.expander("🔍 Data Preview", expanded=False):
-                    st.dataframe(file_info['df'].head(10), use_container_width=True)
+            # Read the file
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(tmp_path)
+            elif uploaded_file.name.endswith('.xlsx'):
+                df = pd.read_excel(tmp_path)
+            else:
+                df = pd.read_csv(tmp_path)
+            
+            # Perform basic analysis
+            with st.spinner("📊 Analyzing dataset structure..."):
+                basic_analysis = analyze_dataset_structure(df, uploaded_file.name)
+            
+            # Hugging Face Analysis
+            if hf_analyzer.model_loaded:
+                with st.spinner("🤖 AI is analyzing your data with Hugging Face model..."):
+                    hf_analysis = hf_analyzer.analyze_with_hf(df, uploaded_file.name, analysis_type)
+            else:
+                hf_analysis = hf_analyzer._fallback_analysis(hf_analyzer._create_detailed_summary(df, uploaded_file.name))
+                st.warning("⚠️ Using basic analysis - Load a Hugging Face model for AI-powered insights")
+            
+            # Display results
+            create_analysis_dashboard(basic_analysis, hf_analysis)
+            
+            # Data preview
+            with st.expander("🔍 Data Preview", expanded=False):
+                st.dataframe(df.head(10), use_container_width=True)
+                st.write(f"**Full Dataset**: {basic_analysis['shape'][0]:,} rows × {basic_analysis['shape'][1]} columns")
+                st.write(f"**Analysis Time**: {basic_analysis['timestamp']}")
         
         except Exception as e:
             st.error(f"Error analyzing file: {str(e)}")
@@ -515,29 +420,27 @@ def main():
                 pass
     
     else:
-        st.info("👆 Upload a dataset to get comprehensive data engineering analysis!")
+        st.info("👆 Upload a dataset and configure Hugging Face to get AI-powered analysis!")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🎯 What You'll Get")
+            st.subheader("🚀 How It Works")
             st.markdown("""
-            - **Data Quality Assessment** with scoring
-            - **Storage Optimization** recommendations
-            - **Memory Usage** analysis
-            - **Data Type** optimization
-            - **Null Value** analysis
-            - **Cardinality** assessment
+            1. **Configure HF** - Enter token & choose model in sidebar
+            2. **Upload Data** - Any CSV, Excel, or Parquet file
+            3. **Get AI Analysis** - HF model provides intelligent insights
+            4. **Implement** - Use specific, data-driven recommendations
             """)
         
         with col2:
-            st.subheader("⚡ Fast & Reliable")
+            st.subheader("🎯 What You Get")
             st.markdown("""
-            - **No external dependencies**
-            - **Instant analysis**
-            - **Technical focus**
-            - **Actionable insights**
-            - **Production-ready recommendations**
+            - **AI-Powered Insights** - Not rule-based templates
+            - **Dataset-Specific** - Unique analysis for each file
+            - **Technical Depth** - Data engineering expertise
+            - **Business Context** - Domain-aware recommendations
+            - **Actionable Advice** - Specific, implementable steps
             """)
 
 if __name__ == "__main__":
