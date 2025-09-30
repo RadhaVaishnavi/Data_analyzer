@@ -7,3 +7,6 @@ torch
 transformers
 accelerate
 bitsandbytes
+openai
+google-generativeai
+anthropic
