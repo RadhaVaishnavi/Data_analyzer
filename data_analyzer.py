@@ -1,17 +1,16 @@
-# comprehensive_data_analyzer.py
+# lightweight_efficient_analyzer.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import os
 import tempfile
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 import re
 import warnings
 warnings.filterwarnings('ignore')
 
-# Hugging Face imports
+# Lightweight LLM - Using Google's Gemma model which is efficient
 try:
     from transformers import pipeline
     from huggingface_hub import login
@@ -21,371 +20,231 @@ except ImportError:
 
 # Set page config
 st.set_page_config(
-    page_title="Comprehensive Data Analyzer",
-    page_icon="🔍", 
+    page_title="Efficient Data Analyzer", 
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-class ComprehensiveAnalyzer:
+class EfficientAnalyzer:
     def __init__(self):
         self.pipeline = None
         self.model_loaded = False
-    
-    def setup_huggingface(self, hf_token):
-        """Setup Hugging Face with a reliable model"""
+        
+    def setup_lightweight_model(self, hf_token):
+        """Setup a lightweight but capable model"""
         try:
             if not HF_AVAILABLE:
                 return False
-            
+                
             login(token=hf_token)
             
-            # Use a model that's good at reasoning and analysis
+            # Use Google's Gemma model - efficient and capable
             self.pipeline = pipeline(
                 "text-generation",
-                model="mistralai/Mistral-7B-Instruct-v0.2",
+                model="google/gemma-2b-it",  # Very lightweight but capable
                 torch_dtype="auto",
-                device_map="auto",
+                device_map="auto", 
                 trust_remote_code=True,
-                max_length=2048
+                max_length=1024
             )
             
             self.model_loaded = True
             return True
             
         except Exception as e:
-            st.error(f"❌ Failed to load model: {str(e)}")
-            return False
+            st.error(f"Model loading failed: {str(e)}")
+            # Fallback to even smaller model
+            try:
+                self.pipeline = pipeline(
+                    "text-generation",
+                    model="microsoft/DialoGPT-small",  # Very small fallback
+                    torch_dtype="auto",
+                    max_length=512
+                )
+                self.model_loaded = True
+                return True
+            except:
+                return False
     
-    def comprehensive_analysis(self, df, filename):
-        """Perform comprehensive analysis using the 21-question framework"""
+    def analyze_dataset(self, df, filename):
+        """Perform efficient but detailed analysis"""
+        # First, extract key features from the dataset
+        dataset_features = self._extract_dataset_features(df, filename)
         
-        # Generate detailed analysis using all 21 questions
-        analysis_results = self._analyze_all_questions(df, filename)
-        
-        # Use HF model to synthesize insights
+        # Use LLM for intelligent analysis
         if self.model_loaded:
-            hf_insights = self._get_hf_insights(analysis_results, filename)
-            return analysis_results, hf_insights
+            analysis = self._get_llm_analysis(dataset_features, filename)
         else:
-            return analysis_results, self._synthesize_insights(analysis_results)
+            analysis = self._get_smart_analysis(dataset_features, filename)
+            
+        return dataset_features, analysis
     
-    def _analyze_all_questions(self, df, filename):
-        """Analyze all 21 questions comprehensively"""
-        analysis = {}
+    def _extract_dataset_features(self, df, filename):
+        """Extract comprehensive dataset features"""
+        features = {}
         
-        # Q1: Purpose and Use Case
-        analysis['purpose'] = self._analyze_purpose(df, filename)
-        
-        # Q2: Source and Provenance
-        analysis['provenance'] = self._analyze_provenance(df, filename)
-        
-        # Q3: Documentation
-        analysis['documentation'] = self._analyze_documentation(df)
-        
-        # Q4: Sensitive Information
-        analysis['sensitivity'] = self._analyze_sensitivity(df)
-        
-        # Q5: Format and Structure
-        analysis['structure'] = self._analyze_structure(df, filename)
-        
-        # Q6: Size and Growth
-        analysis['size'] = self._analyze_size(df, filename)
-        
-        # Q7: Missing Values
-        analysis['completeness'] = self._analyze_completeness(df)
-        
-        # Q8: Accuracy
-        analysis['accuracy'] = self._analyze_accuracy(df)
-        
-        # Q9: Consistency
-        analysis['consistency'] = self._analyze_consistency(df)
-        
-        # Q10: Validity
-        analysis['validity'] = self._analyze_validity(df)
-        
-        # Q11: Uniqueness
-        analysis['uniqueness'] = self._analyze_uniqueness(df)
-        
-        # Q12: Timeliness
-        analysis['timeliness'] = self._analyze_timeliness(df)
-        
-        # Q13: Relevance
-        analysis['relevance'] = self._analyze_relevance(df)
-        
-        # Q14: Integrity
-        analysis['integrity'] = self._analyze_integrity(df)
-        
-        # Q15: Sampling Biases
-        analysis['biases'] = self._analyze_biases(df)
-        
-        # Q16: Distributions and Outliers
-        analysis['distributions'] = self._analyze_distributions(df)
-        
-        # Q17: Correlations and Patterns
-        analysis['correlations'] = self._analyze_correlations(df)
-        
-        # Q18: Pipeline Integration
-        analysis['pipeline'] = self._analyze_pipeline_integration(df)
-        
-        # Q19: Performance
-        analysis['performance'] = self._analyze_performance(df)
-        
-        # Q20: Impact Assessment
-        analysis['impact'] = self._analyze_impact(df)
-        
-        # Q21: Compute Resources
-        analysis['resources'] = self._analyze_resources(df)
-        
-        return analysis
-    
-    def _analyze_purpose(self, df, filename):
-        """Q1: Analyze dataset purpose and use cases"""
-        analysis = {}
-        
-        # Detect potential use cases based on column patterns
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        categorical_cols = df.select_dtypes(include=['object']).columns
-        datetime_cols = [col for col in df.columns if any(word in col.lower() for word in ['date', 'time', 'year', 'month'])]
-        
-        # Determine primary use case
-        use_cases = []
-        
-        if len(datetime_cols) >= 1 and len(numeric_cols) >= 2:
-            use_cases.append("TIME_SERIES_ANALYSIS")
-            if len(numeric_cols) >= 5:
-                use_cases.append("FORECASTING")
-        
-        if any('target' in col.lower() or 'label' in col.lower() for col in df.columns):
-            use_cases.append("SUPERVISED_LEARNING")
-        
-        if len(categorical_cols) >= 3:
-            use_cases.append("SEGMENTATION")
-        
-        if len(numeric_cols) >= 8:
-            use_cases.append("FEATURE_ANALYSIS")
-        
-        # Detect domain
-        domain_keywords = {
-            'FINANCIAL': ['amount', 'price', 'cost', 'revenue', 'balance', 'transaction'],
-            'RETAIL': ['product', 'customer', 'order', 'sales', 'inventory'],
-            'HEALTHCARE': ['patient', 'diagnosis', 'treatment', 'medical'],
-            'HR': ['employee', 'salary', 'department', 'performance'],
-            'MARKETING': ['campaign', 'conversion', 'click', 'lead']
+        # Basic info
+        features['basic'] = {
+            'filename': filename,
+            'rows': len(df),
+            'columns': len(df.columns),
+            'memory_mb': df.memory_usage(deep=True).sum() / 1024 / 1024,
+            'total_cells': len(df) * len(df.columns)
         }
         
-        domain = 'GENERAL'
-        column_text = ' '.join(df.columns).lower()
-        for dom, keywords in domain_keywords.items():
-            if any(keyword in column_text for keyword in keywords):
-                domain = dom
-                break
-        
-        analysis['primary_use_cases'] = use_cases if use_cases else ['EXPLORATORY_ANALYSIS']
-        analysis['domain'] = domain
-        analysis['suitability_score'] = self._calculate_suitability_score(df, use_cases)
-        
-        return analysis
-    
-    def _analyze_provenance(self, df, filename):
-        """Q2: Analyze data source and provenance"""
-        analysis = {}
-        
-        # Check for common data quality issues that indicate source problems
-        issues = []
-        
-        # Check for mixed data types (common in scraped data)
+        # Column analysis
+        features['columns'] = {}
         for col in df.columns:
-            if df[col].dtype == 'object':
-                # Check if column has mixed numeric and string values
-                numeric_count = pd.to_numeric(df[col], errors='coerce').notna().sum()
-                if 0.1 < (numeric_count / len(df)) < 0.9:  # Mixed types
-                    issues.append(f"Mixed data types in {col}")
-        
-        # Check for inconsistent formatting
-        for col in df.select_dtypes(include=['object']).columns:
-            if df[col].str.contains(r'\s{2,}', na=False).any():  # Multiple spaces
-                issues.append(f"Inconsistent spacing in {col}")
-        
-        analysis['quality_issues'] = issues
-        analysis['recommended_actions'] = [
-            "Validate against source system if available",
-            "Check data collection methodology",
-            "Implement data quality monitoring"
-        ]
-        
-        return analysis
-    
-    def _analyze_documentation(self, df):
-        """Q3: Analyze documentation needs"""
-        analysis = {}
-        
-        # Infer schema and data dictionary
-        data_dict = {}
-        for col in df.columns:
-            data_dict[col] = {
+            features['columns'][col] = {
                 'dtype': str(df[col].dtype),
                 'null_count': df[col].isnull().sum(),
-                'null_percentage': (df[col].isnull().sum() / len(df)) * 100,
+                'null_pct': (df[col].isnull().sum() / len(df)) * 100,
                 'unique_count': df[col].nunique(),
+                'unique_pct': (df[col].nunique() / len(df)) * 100,
                 'sample_values': df[col].dropna().head(3).tolist() if df[col].dtype == 'object' else None
             }
         
-        analysis['inferred_schema'] = data_dict
-        analysis['documentation_gaps'] = [
-            "No formal data dictionary found",
-            "Column descriptions missing",
-            "Business definitions needed"
-        ]
-        
-        return analysis
-    
-    def _analyze_sensitivity(self, df):
-        """Q4: Analyze sensitive information"""
-        analysis = {}
-        
-        pii_patterns = {
-            'email': r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-            'phone': r'\b(\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4})\b',
-            'ssn': r'\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b'
+        # Data type distribution
+        features['dtypes'] = {
+            'numeric': len(df.select_dtypes(include=[np.number]).columns),
+            'categorical': len(df.select_dtypes(include=['object']).columns),
+            'boolean': len(df.select_dtypes(include=['bool']).columns),
+            'datetime': len([col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()])
         }
         
-        sensitive_columns = []
-        for col in df.select_dtypes(include=['object']).columns:
-            col_text = ' '.join(df[col].dropna().astype(str))
-            for pii_type, pattern in pii_patterns.items():
-                if re.search(pattern, col_text):
-                    sensitive_columns.append((col, pii_type))
-                    break
+        # Data quality issues
+        features['quality_issues'] = self._find_quality_issues(df)
         
-        analysis['sensitive_columns'] = sensitive_columns
-        analysis['risk_level'] = 'HIGH' if sensitive_columns else 'LOW'
-        analysis['recommendations'] = [
-            "Implement data masking for sensitive columns",
-            "Review compliance requirements (GDPR, HIPAA)",
-            "Consider anonymization techniques"
-        ]
+        # Patterns and characteristics
+        features['patterns'] = self._detect_patterns(df)
         
-        return analysis
-    
-    def _analyze_structure(self, df, filename):
-        """Q5: Analyze format and structure"""
-        analysis = {}
-        
-        structure_issues = []
-        
-        # Check for nested structures
-        for col in df.select_dtypes(include=['object']).columns:
-            if df[col].str.contains(r'\{.*\}', na=False).any():  # JSON-like
-                structure_issues.append(f"Potential nested data in {col}")
-            if df[col].str.contains(r'\[.*\]', na=False).any():  # Array-like
-                structure_issues.append(f"Potential array data in {col}")
-        
-        analysis['format_issues'] = structure_issues
-        analysis['recommended_format'] = 'Parquet' if len(df) > 10000 else 'CSV'
-        analysis['normalization_needed'] = len(structure_issues) > 0
-        
-        return analysis
-    
-    def _analyze_size(self, df, filename):
-        """Q6: Analyze size and growth projections"""
-        analysis = {}
-        
-        memory_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
-        row_count = len(df)
-        col_count = len(df.columns)
-        
-        analysis['current_size'] = {
-            'rows': row_count,
-            'columns': col_count,
-            'memory_mb': memory_mb,
-            'cells': row_count * col_count
-        }
-        
-        # Growth projections (simple heuristic)
-        if memory_mb > 100:
-            growth_category = 'LARGE_SCALE'
-            processing = 'DISTRIBUTED'
-        elif memory_mb > 10:
-            growth_category = 'MEDIUM_SCALE'
-            processing = 'SINGLE_MACHINE_OPTIMIZED'
-        else:
-            growth_category = 'SMALL_SCALE'
-            processing = 'SINGLE_MACHINE'
-        
-        analysis['growth_category'] = growth_category
-        analysis['recommended_processing'] = processing
-        
-        return analysis
-    
-    def _analyze_completeness(self, df):
-        """Q7: Analyze missing values"""
-        analysis = {}
-        
-        missing_analysis = {}
-        for col in df.columns:
-            null_count = df[col].isnull().sum()
-            null_pct = (null_count / len(df)) * 100
-            if null_count > 0:
-                missing_analysis[col] = {
-                    'count': null_count,
-                    'percentage': null_pct,
-                    'severity': 'CRITICAL' if null_pct > 50 else 'HIGH' if null_pct > 20 else 'MEDIUM'
+        # Statistical summary for numeric columns
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            features['numeric_stats'] = {}
+            for col in numeric_cols[:5]:  # Limit to first 5 for efficiency
+                stats = df[col].describe()
+                features['numeric_stats'][col] = {
+                    'mean': stats['mean'],
+                    'std': stats['std'],
+                    'min': stats['min'],
+                    'max': stats['max'],
+                    'median': df[col].median()
                 }
         
-        analysis['missing_values'] = missing_analysis
-        analysis['completeness_score'] = 100 - (df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100)
-        
-        # Imputation recommendations
-        imputation_strategies = []
-        for col, info in missing_analysis.items():
-            if info['severity'] == 'CRITICAL':
-                imputation_strategies.append(f"Consider dropping {col} (>50% missing)")
-            elif df[col].dtype in ['float64', 'int64']:
-                imputation_strategies.append(f"Use median imputation for {col}")
-            else:
-                imputation_strategies.append(f"Use mode imputation for {col}")
-        
-        analysis['imputation_recommendations'] = imputation_strategies
-        
-        return analysis
+        return features
     
-    # Continue with other analysis methods for remaining questions...
-    # [The rest of the analysis methods would follow the same pattern]
-    
-    def _analyze_accuracy(self, df):
-        """Q8: Analyze data accuracy"""
-        return {"analysis": "Accuracy check based on value ranges and patterns"}
-    
-    def _analyze_consistency(self, df):
-        """Q9: Analyze consistency"""
-        return {"analysis": "Format and value consistency analysis"}
-    
-    # ... [Implement all remaining analysis methods]
-    
-    def _calculate_suitability_score(self, df, use_cases):
-        """Calculate how suitable the data is for detected use cases"""
-        score = 50  # Base score
+    def _find_quality_issues(self, df):
+        """Find data quality issues"""
+        issues = []
         
-        # Adjust based on data quality
-        null_percentage = (df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100
-        score -= null_percentage * 0.5  # Penalize for nulls
+        # Null value issues
+        for col in df.columns:
+            null_pct = (df[col].isnull().sum() / len(df)) * 100
+            if null_pct > 50:
+                issues.append(f"🚨 CRITICAL: {col} has {null_pct:.1f}% null values")
+            elif null_pct > 20:
+                issues.append(f"⚠️ HIGH: {col} has {null_pct:.1f}% null values")
+            elif null_pct > 5:
+                issues.append(f"📊 MEDIUM: {col} has {null_pct:.1f}% null values")
         
-        # Bonus for having clear use cases
-        if use_cases:
-            score += len(use_cases) * 10
+        # High cardinality issues
+        for col in df.columns:
+            unique_pct = (df[col].nunique() / len(df)) * 100
+            if unique_pct > 95:
+                issues.append(f"🔍 HIGH_CARDINALITY: {col} has {unique_pct:.1f}% unique values")
         
-        return max(0, min(100, score))
+        # Constant columns
+        for col in df.columns:
+            if df[col].nunique() <= 1:
+                issues.append(f"📊 CONSTANT: {col} has only {df[col].nunique()} unique value")
+        
+        # Data type issues
+        for col in df.select_dtypes(include=['object']).columns:
+            # Check if numeric data stored as string
+            numeric_count = pd.to_numeric(df[col], errors='coerce').notna().sum()
+            if numeric_count > len(df) * 0.5:  # More than 50% numeric
+                issues.append(f"🔧 TYPE_ISSUE: {col} appears to be numeric data stored as text")
+        
+        return issues
     
-    def _get_hf_insights(self, analysis_results, filename):
-        """Get insights from Hugging Face model"""
+    def _detect_patterns(self, df):
+        """Detect dataset patterns and characteristics"""
+        patterns = {}
+        
+        # Domain detection
+        column_text = ' '.join(df.columns).lower()
+        domains = {
+            'FINANCIAL': ['amount', 'price', 'cost', 'revenue', 'transaction', 'balance', 'payment'],
+            'RETAIL': ['product', 'customer', 'order', 'sales', 'inventory', 'sku', 'purchase'],
+            'HEALTHCARE': ['patient', 'diagnosis', 'treatment', 'medical', 'hospital', 'doctor'],
+            'HR': ['employee', 'salary', 'department', 'performance', 'hire', 'manager'],
+            'MARKETING': ['campaign', 'conversion', 'click', 'impression', 'lead', 'customer'],
+            'TELECOM': ['call', 'minute', 'data', 'usage', 'subscription', 'plan']
+        }
+        
+        detected_domains = []
+        for domain, keywords in domains.items():
+            if any(keyword in column_text for keyword in keywords):
+                detected_domains.append(domain)
+        
+        patterns['domains'] = detected_domains if detected_domains else ['GENERAL']
+        
+        # Use case detection
+        use_cases = []
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        
+        if len([col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]) >= 1:
+            use_cases.append("TIME_SERIES")
+        
+        if any(col.lower() in ['target', 'label', 'class'] for col in df.columns):
+            use_cases.append("CLASSIFICATION")
+        elif len(categorical_cols) >= 3:
+            use_cases.append("SEGMENTATION")
+        
+        if len(numeric_cols) >= 5:
+            use_cases.append("REGRESSION")
+        
+        if len(df.columns) > 20:
+            use_cases.append("FEATURE_RICH_ANALYSIS")
+        
+        patterns['use_cases'] = use_cases if use_cases else ['EXPLORATORY_ANALYSIS']
+        
+        # Column purpose detection
+        column_purposes = {}
+        for col in df.columns:
+            col_lower = col.lower()
+            purposes = []
+            
+            if any(word in col_lower for word in ['id', 'code', 'key']):
+                purposes.append('IDENTIFIER')
+            if any(word in col_lower for word in ['date', 'time', 'year', 'month']):
+                purposes.append('TEMPORAL')
+            if any(word in col_lower for word in ['amount', 'price', 'cost', 'value']):
+                purposes.append('MONETARY')
+            if any(word in col_lower for word in ['count', 'total', 'sum', 'number']):
+                purposes.append('QUANTITATIVE')
+            if any(word in col_lower for word in ['name', 'description', 'title']):
+                purposes.append('DESCRIPTIVE')
+            if any(word in col_lower for word in ['type', 'category', 'status', 'flag']):
+                purposes.append('CATEGORICAL')
+            
+            column_purposes[col] = purposes if purposes else ['UNCATEGORIZED']
+        
+        patterns['column_purposes'] = column_purposes
+        
+        return patterns
+    
+    def _get_llm_analysis(self, features, filename):
+        """Get analysis from lightweight LLM"""
         try:
-            # Create comprehensive prompt
-            prompt = self._create_analysis_prompt(analysis_results, filename)
+            prompt = self._create_efficient_prompt(features, filename)
             
             response = self.pipeline(
                 prompt,
-                max_new_tokens=1024,
+                max_new_tokens=512,
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.9,
@@ -395,99 +254,220 @@ class ComprehensiveAnalyzer:
             return response[0]['generated_text']
             
         except Exception as e:
-            return f"AI insights unavailable: {str(e)}"
+            return self._get_smart_analysis(features, filename)
     
-    def _create_analysis_prompt(self, analysis_results, filename):
-        """Create detailed prompt for HF model"""
-        return f"""
-        As a senior data engineer, provide a comprehensive analysis of this dataset:
+    def _create_efficient_prompt(self, features, filename):
+        """Create efficient prompt for lightweight model"""
+        basic = features['basic']
+        patterns = features['patterns']
+        quality_issues = features['quality_issues']
+        
+        prompt = f"""
+        Analyze this dataset and provide specific recommendations:
 
         DATASET: {filename}
-        
-        KEY FINDINGS:
-        - Purpose: {analysis_results['purpose']['primary_use_cases']}
-        - Domain: {analysis_results['purpose']['domain']}
-        - Suitability Score: {analysis_results['purpose']['suitability_score']}/100
-        - Data Quality: {analysis_results['completeness']['completeness_score']:.1f}% complete
-        - Size: {analysis_results['size']['current_size']['rows']} rows, {analysis_results['size']['current_size']['columns']} columns
-        - Memory: {analysis_results['size']['current_size']['memory_mb']:.1f} MB
-        
+        SIZE: {basic['rows']} rows, {basic['columns']} columns
+        MEMORY: {basic['memory_mb']:.1f} MB
+        DOMAIN: {', '.join(patterns['domains'])}
+        USE CASES: {', '.join(patterns['use_cases'])}
+
+        DATA TYPES:
+        - Numeric: {features['dtypes']['numeric']} columns
+        - Categorical: {features['dtypes']['categorical']} columns  
+        - Boolean: {features['dtypes']['boolean']} columns
+        - DateTime: {features['dtypes']['datetime']} columns
+
+        QUALITY ISSUES ({len(quality_issues)} found):
+        {chr(10).join(quality_issues[:5])}
+
         Provide specific recommendations for:
-        1. Data quality improvement
+        1. Data quality improvements
         2. Storage optimization
-        3. Processing strategy
-        4. Potential use cases
-        5. Risk mitigation
-        
-        Be very specific and reference the actual data characteristics.
+        3. Suitable machine learning models
+        4. Business applications
+        5. Technical next steps
+
+        Be very specific to this dataset's characteristics.
         """
+        
+        return prompt
     
-    def _synthesize_insights(self, analysis_results):
-        """Synthesize insights when HF model is not available"""
-        insights = f"""
-## 🎯 COMPREHENSIVE ANALYSIS RESULTS
+    def _get_smart_analysis(self, features, filename):
+        """Generate smart analysis without LLM"""
+        basic = features['basic']
+        patterns = features['patterns']
+        quality_issues = features['quality_issues']
+        
+        analysis = f"""
+## 🎯 COMPREHENSIVE ANALYSIS: {filename}
 
-### 📊 EXECUTIVE SUMMARY
-- **Primary Use Cases**: {', '.join(analysis_results['purpose']['primary_use_cases'])}
-- **Domain**: {analysis_results['purpose']['domain']}
-- **Suitability Score**: {analysis_results['purpose']['suitability_score']}/100
-- **Data Quality**: {analysis_results['completeness']['completeness_score']:.1f}% complete
+### 📊 DATASET CHARACTERISTICS
+- **Size**: {basic['rows']:,} rows × {basic['columns']} columns
+- **Memory**: {basic['memory_mb']:.1f} MB
+- **Domain**: {', '.join(patterns['domains'])}
+- **Primary Use Cases**: {', '.join(patterns['use_cases'])}
 
-### 🚨 CRITICAL FINDINGS
+### 🚨 DATA QUALITY ASSESSMENT
+**Issues Found**: {len(quality_issues)}
 """
         
-        # Add critical issues
-        if analysis_results['completeness']['missing_values']:
-            critical_missing = [col for col, info in analysis_results['completeness']['missing_values'].items() 
-                              if info['severity'] == 'CRITICAL']
-            if critical_missing:
-                insights += f"- **Critical Data Gaps**: {len(critical_missing)} columns with >50% missing values\\n"
+        # Critical issues
+        critical_issues = [issue for issue in quality_issues if '🚨 CRITICAL' in issue]
+        if critical_issues:
+            analysis += "\n**Critical Issues (Immediate Action Required):**\n"
+            for issue in critical_issues[:3]:
+                analysis += f"- {issue}\\n"
         
-        if analysis_results['sensitivity']['sensitive_columns']:
-            insights += f"- **Sensitive Data**: {len(analysis_results['sensitivity']['sensitive_columns'])} columns contain PII\\n"
+        # High priority issues
+        high_issues = [issue for issue in quality_issues if '⚠️ HIGH' in issue]
+        if high_issues:
+            analysis += "\n**High Priority Issues:**\n"
+            for issue in high_issues[:3]:
+                analysis += f"- {issue}\\n"
         
-        insights += """
-### 💡 RECOMMENDATIONS
+        analysis += f"""
+### 💡 SPECIFIC RECOMMENDATIONS
 
-#### 1. IMMEDIATE ACTIONS
-- Address critical data quality issues
-- Implement proper data governance
-- Set up monitoring for data quality
-
-#### 2. STRATEGIC PLANNING
-- Develop data quality framework
-- Implement proper documentation
-- Establish data lineage tracking
-
-#### 3. TECHNICAL OPTIMIZATION
-- Optimize storage format
-- Implement proper data types
-- Set up automated quality checks
+#### 1. DATA QUALITY IMPROVEMENT
 """
         
-        return insights
+        # Data quality recommendations based on issues
+        if any('null' in issue.lower() for issue in quality_issues):
+            analysis += "- **Null Value Strategy**: Implement targeted imputation based on column importance\\n"
+        
+        if any('cardinality' in issue.lower() for issue in quality_issues):
+            analysis += "- **High Cardinality**: Use target encoding or feature hashing for ML models\\n"
+        
+        if any('constant' in issue.lower() for issue in quality_issues):
+            analysis += "- **Constant Columns**: Remove columns with no predictive value\\n"
+        
+        analysis += f"""
+#### 2. STORAGE & PROCESSING OPTIMIZATION
+"""
+        
+        # Storage recommendations
+        if basic['memory_mb'] > 100:
+            analysis += "- **Large Dataset**: Use chunked processing and consider distributed computing\\n"
+            analysis += "- **Storage**: Convert to Parquet format for better compression\\n"
+        else:
+            analysis += "- **Moderate Size**: In-memory processing is optimal\\n"
+            analysis += "- **Optimization**: Focus on data type efficiency\\n"
+        
+        analysis += f"""
+#### 3. MACHINE LEARNING STRATEGY
+"""
+        
+        # ML recommendations based on use cases
+        use_cases = patterns['use_cases']
+        if 'CLASSIFICATION' in use_cases:
+            analysis += "- **Classification**: Use XGBoost, Random Forest, or Neural Networks\\n"
+        if 'REGRESSION' in use_cases:
+            analysis += "- **Regression**: Gradient Boosting or Linear Models with regularization\\n"
+        if 'TIME_SERIES' in use_cases:
+            analysis += "- **Time Series**: ARIMA, Prophet, or LSTM networks\\n"
+        if 'SEGMENTATION' in use_cases:
+            analysis += "- **Segmentation**: K-Means clustering or DBSCAN\\n"
+        
+        analysis += f"""
+#### 4. BUSINESS APPLICATIONS
+- **{patterns['domains'][0]} Focus**: Leverage domain-specific patterns for insights
+- **Data Products**: Consider building predictive models or dashboards
+- **Decision Support**: Use for strategic planning and optimization
+
+#### 5. TECHNICAL NEXT STEPS
+1. **Immediate**: Address critical data quality issues
+2. **Short-term**: Implement storage optimizations
+3. **Medium-term**: Develop ML models based on use cases
+4. **Long-term**: Establish data governance and monitoring
+"""
+        
+        return analysis
 
 # Initialize analyzer
-analyzer = ComprehensiveAnalyzer()
+analyzer = EfficientAnalyzer()
+
+def create_interactive_dashboard(features, analysis):
+    """Create interactive dashboard"""
+    
+    st.subheader("📊 Dataset Overview")
+    
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Rows", f"{features['basic']['rows']:,}")
+    with col2:
+        st.metric("Total Columns", features['basic']['columns'])
+    with col3:
+        st.metric("Memory Usage", f"{features['basic']['memory_mb']:.1f} MB")
+    with col4:
+        st.metric("Quality Issues", len(features['quality_issues']))
+    
+    # Data type distribution
+    st.subheader("📈 Data Composition")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Numeric Columns", features['dtypes']['numeric'])
+    with col2:
+        st.metric("Categorical Columns", features['dtypes']['categorical'])
+    with col3:
+        st.metric("Boolean Columns", features['dtypes']['boolean'])
+    with col4:
+        st.metric("DateTime Columns", features['dtypes']['datetime'])
+    
+    # Quality issues
+    with st.expander("🚨 Data Quality Issues", expanded=True):
+        if features['quality_issues']:
+            for issue in features['quality_issues'][:8]:
+                st.write(issue)
+        else:
+            st.success("✅ No major quality issues detected")
+    
+    # Domain and use cases
+    with st.expander("🎯 Domain & Use Cases", expanded=True):
+        st.write(f"**Detected Domain**: {', '.join(features['patterns']['domains'])}")
+        st.write(f"**Recommended Use Cases**: {', '.join(features['patterns']['use_cases'])}")
+    
+    # LLM Analysis
+    st.subheader("🤖 AI-Powered Analysis")
+    st.markdown(analysis)
+    
+    if analyzer.model_loaded:
+        st.success("✅ Analysis powered by lightweight AI model")
 
 def main():
-    st.title("🔍 Comprehensive Data Analyzer")
-    st.markdown("**Deep analysis using 21-question data engineering framework**")
+    st.title("⚡ Efficient Data Analyzer")
+    st.markdown("**Fast, intelligent analysis using lightweight AI models**")
     
-    # Hugging Face setup
+    # Simple setup
     with st.sidebar:
-        st.header("🤗 Hugging Face Setup")
-        hf_token = st.text_input("HF Token (for enhanced analysis)", type="password")
+        st.header("⚙️ Quick Setup")
         
-        if st.button("Load AI Model") and hf_token:
-            with st.spinner("Loading AI model..."):
-                if analyzer.setup_huggingface(hf_token):
+        hf_token = st.text_input("HF Token (optional)", type="password",
+                               help="For enhanced AI analysis. Get from huggingface.co")
+        
+        if st.button("🚀 Load AI Model") and hf_token:
+            with st.spinner("Loading efficient model..."):
+                if analyzer.setup_lightweight_model(hf_token):
                     st.success("AI model loaded!")
                 else:
-                    st.error("Failed to load model")
+                    st.error("Using smart analysis without AI")
+        
+        st.markdown("---")
+        st.markdown("""
+        **⚡ Features:**
+        - Fast analysis (seconds)
+        - Lightweight AI models
+        - Comprehensive insights
+        - Actionable recommendations
+        - No timeouts
+        """)
     
     # File upload
-    uploaded_file = st.file_uploader("📤 Upload Dataset", type=['csv', 'xlsx', 'parquet'])
+    uploaded_file = st.file_uploader(
+        "📤 Upload your dataset",
+        type=['csv', 'xlsx', 'parquet'],
+        help="CSV, Excel, or Parquet files supported"
+    )
     
     if uploaded_file is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
@@ -503,26 +483,20 @@ def main():
             else:
                 df = pd.read_parquet(tmp_path)
             
-            # Perform comprehensive analysis
-            with st.spinner("🔍 Performing comprehensive analysis..."):
-                analysis_results, insights = analyzer.comprehensive_analysis(df, uploaded_file.name)
+            # Perform analysis
+            with st.spinner("⚡ Analyzing dataset..."):
+                features, analysis = analyzer.analyze_dataset(df, uploaded_file.name)
             
             # Display results
-            st.subheader("📋 Analysis Results")
-            st.markdown(insights)
-            
-            # Show detailed findings
-            with st.expander("🔍 Detailed Findings", expanded=True):
-                st.json(analysis_results)
+            create_interactive_dashboard(features, analysis)
             
             # Data preview
-            with st.expander("👀 Data Preview", expanded=False):
-                st.dataframe(df.head(10), use_container_width=True)
-                st.write(f"**Shape**: {df.shape[0]} rows × {df.shape[1]} columns")
-                st.write(f"**Memory**: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
+            with st.expander("🔍 Data Preview", expanded=False):
+                st.dataframe(df.head(8), use_container_width=True)
+                st.write(f"**Full dataset**: {len(df):,} rows × {len(df.columns)} columns")
         
         except Exception as e:
-            st.error(f"Error analyzing file: {str(e)}")
+            st.error(f"Error: {str(e)}")
         finally:
             try:
                 os.unlink(tmp_path)
@@ -530,41 +504,27 @@ def main():
                 pass
     
     else:
-        st.info("👆 Upload a dataset for comprehensive analysis!")
+        st.info("👆 Upload a dataset for fast, intelligent analysis!")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🎯 21-Question Framework")
+            st.subheader("🚀 Why This Works")
             st.markdown("""
-            **Data Assessment:**
-            1. Purpose & Use Case
-            2. Source & Provenance  
-            3. Documentation
-            4. Sensitivity
-            5. Structure
-            6. Size & Growth
-            7. Completeness
-            8. Accuracy
-            9. Consistency
-            10. Validity
+            - **Lightweight Models**: Fast loading, no timeouts
+            - **Smart Analysis**: Pattern-based insights
+            - **Actionable**: Specific recommendations
+            - **Reliable**: Works without external APIs
             """)
         
         with col2:
-            st.subheader("🎯 Continued...")
+            st.subheader("🎯 What You Get")
             st.markdown("""
-            **Quality & Technical:**
-            11. Uniqueness
-            12. Timeliness
-            13. Relevance
-            14. Integrity
-            15. Biases
-            16. Distributions
-            17. Correlations
-            18. Pipeline Integration
-            19. Performance
-            20. Impact
-            21. Resources
+            - Data quality assessment
+            - Storage optimization tips
+            - ML model recommendations
+            - Business applications
+            - Technical next steps
             """)
 
 if __name__ == "__main__":
