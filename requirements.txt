@@ -9,3 +9,4 @@ huggingface_hub
 bitsandbytes
 python-dotenv
 scikit-learn
+sentence-transformers
