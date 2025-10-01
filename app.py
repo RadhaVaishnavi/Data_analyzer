@@ -4,6 +4,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import os
 import sys
+import re
 
 # Configure the page
 st.set_page_config(
@@ -18,9 +19,35 @@ def is_code_safe(code: str) -> bool:
     forbidden_patterns = [
         'os.', 'sys.', 'eval', 'exec', 'open', '__import__', 
         'subprocess', 'shutil', 'rmdir', 'remove', 'unlink',
-        'write(', 'read(', 'delete', 'rm ', 'format(', 'compile('
+        'write(', 'read(', 'delete', 'rm ', 'format(', 'compile(',
+        'input(', 'getpass', 'pickle', 'yaml', 'json.loads'
     ]
     return not any(pattern in code for pattern in forbidden_patterns)
+
+def clean_generated_code(code: str) -> str:
+    """Clean and validate generated code"""
+    # Remove any markdown formatting
+    code = re.sub(r'```python|```', '', code).strip()
+    
+    # Remove any explanatory text before/after code
+    lines = code.split('\n')
+    code_lines = []
+    in_code = False
+    
+    for line in lines:
+        if line.strip() and not line.strip().startswith(('#', '"', "'")) and 'print(' not in line:
+            if any(keyword in line for keyword in ['import', 'def ', 'class ', '=', 'df.', 'result =']):
+                in_code = True
+            if in_code:
+                code_lines.append(line)
+    
+    cleaned_code = '\n'.join(code_lines)
+    
+    # Ensure result variable is set
+    if 'result =' not in cleaned_code:
+        cleaned_code += '\nresult = "Analysis completed"'
+    
+    return cleaned_code
 
 # Cache the model loading
 @st.cache_resource(show_spinner=False)
@@ -47,7 +74,7 @@ def load_analyzer_model():
             model_name,
             token=HF_TOKEN,
             device_map="auto",
-            torch_dtype=torch.float16,  # Fixed: using dtype instead of torch_dtype
+            torch_dtype=torch.float16,
             trust_remote_code=True
         )
         
@@ -67,133 +94,155 @@ class CSVAnalyzerAI:
         if model_components:
             self.tokenizer, self.model = model_components
             self.safe_imports = {'pd': pd, 'np': __import__('numpy')}
-            st.success("✅ AI Model loaded successfully!")
         else:
             raise Exception("Model failed to load")
     
-    def _generate_text(self, prompt: str, max_length: int = 400) -> str:
-        """Generate text using the model"""
+    def _generate_text_fast(self, prompt: str, max_length: int = 200) -> str:
+        """Generate text using the model with optimized settings"""
         try:
             inputs = self.tokenizer.encode(prompt, return_tensors="pt")
             with torch.no_grad():
                 outputs = self.model.generate(
                     inputs,
                     max_new_tokens=max_length,
-                    temperature=0.7,
+                    temperature=0.3,  # Lower temperature for more focused output
                     do_sample=True,
                     pad_token_id=self.tokenizer.eos_token_id,
-                    num_return_sequences=1
+                    num_return_sequences=1,
+                    early_stopping=True
                 )
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # Remove the original prompt from response
             return response.replace(prompt, "").strip()
         except Exception as e:
-            return f"Generation error: {str(e)}"
+            return f"# Error in code generation\nresult = 'Failed to generate analysis code'"
     
-    def _extract_code(self, text: str) -> str:
-        """Extract code from generated text"""
-        if "```python" in text:
-            start = text.find("```python") + 9
-            end = text.find("```", start)
-            return text[start:end].strip()
-        elif "```" in text:
-            start = text.find("```") + 3
-            end = text.find("```", start)
-            return text[start:end].strip()
-        else:
-            return text.strip()
-    
-    def analyze_data(self, df, question: str):
-        """Analyze dataframe with the given question"""
+    def analyze_data_fast(self, df, question: str):
+        """Fast analysis with predefined patterns for common questions"""
         try:
-            # Create data profile
+            # Quick analysis for common patterns
+            quick_result = self._quick_analysis(df, question)
+            if quick_result:
+                return quick_result
+            
+            # For complex questions, use AI with timeout
             profile = {
                 "columns": list(df.columns),
                 "data_types": df.dtypes.astype(str).to_dict(),
-                "shape": f"{df.shape[0]} rows, {df.shape[1]} columns",
+                "shape": df.shape,
                 "numeric_columns": df.select_dtypes(include=['number']).columns.tolist(),
-                "sample_data": df.head(2).to_dict('records')
+                "categorical_columns": df.select_dtypes(include=['object', 'category']).columns.tolist()
             }
             
-            # Generate analysis code
-            code_prompt = f"""
-            You are a data analyst. Given this data:
-            - Columns: {profile['columns']}
-            - Data Types: {profile['data_types']}
-            - Sample Data: {profile['sample_data']}
+            # Simplified prompt for faster generation
+            code_prompt = f"Data: {profile['columns']}. Question: {question}. Code:"
             
-            Question: {question}
-            
-            Generate Python pandas code to answer this question. Use dataframe 'df'.
-            Store the final result in variable 'result'.
-            Return ONLY the code without any explanations or markdown formatting.
-            
-            Code:
-            """
-            
-            generated_text = self._generate_text(code_prompt)
-            code = self._extract_code(generated_text)
+            generated_text = self._generate_text_fast(code_prompt, max_length=150)
+            code = clean_generated_code(generated_text)
             
             # Security check
             if not is_code_safe(code):
                 return {
                     "success": False,
-                    "error": "Security violation detected in generated code"
+                    "error": "Security violation detected"
                 }
             
             # Execute code safely
             exec_globals = {**self.safe_imports, 'df': df}
             exec_locals = {}
             exec(code, exec_globals, exec_locals)
-            result = exec_locals.get('result', 'Analysis completed successfully')
-            
-            # Generate explanation
-            explanation_prompt = f"""
-            Question: {question}
-            Result: {result}
-            
-            Explain this analysis in simple, clear terms:
-            """
-            explanation = self._generate_text(explanation_prompt, max_length=300)
+            result = exec_locals.get('result', 'Analysis completed')
             
             return {
                 "success": True,
                 "answer": result,
-                "explanation": explanation,
-                "code": code,
-                "data_profile": profile
+                "explanation": f"Analysis for: {question}",
+                "code": code
             }
             
         except Exception as e:
             return {
                 "success": False,
-                "error": str(e)
+                "error": f"Execution error: {str(e)}"
             }
+    
+    def _quick_analysis(self, df, question: str):
+        """Handle common questions with predefined code patterns"""
+        question_lower = question.lower()
+        
+        # Basic statistics
+        if any(phrase in question_lower for phrase in ['missing', 'null', 'nan']):
+            missing_data = df.isnull().sum()
+            result = f"Missing values per column:\n{missing_data}"
+            return {
+                "success": True,
+                "answer": result,
+                "explanation": "Shows count of missing/null values for each column in the dataset",
+                "code": "result = df.isnull().sum()"
+            }
+        
+        # Dataset size
+        elif any(phrase in question_lower for phrase in ['size', 'shape', 'dimension']):
+            result = f"Dataset shape: {df.shape} (rows: {df.shape[0]}, columns: {df.shape[1]})"
+            return {
+                "success": True,
+                "answer": result,
+                "explanation": "Shows the dimensions of your dataset",
+                "code": "result = f'Dataset shape: {df.shape} (rows: {df.shape[0]}, columns: {df.shape[1]})'"
+            }
+        
+        # Data types
+        elif any(phrase in question_lower for phrase in ['data type', 'dtype', 'data types']):
+            result = f"Data types:\n{df.dtypes}"
+            return {
+                "success": True,
+                "answer": result,
+                "explanation": "Shows the data types of each column",
+                "code": "result = df.dtypes"
+            }
+        
+        # Duplicates
+        elif any(phrase in question_lower for phrase in ['duplicate', 'duplicates']):
+            duplicate_count = df.duplicated().sum()
+            result = f"Number of duplicate rows: {duplicate_count}"
+            return {
+                "success": True,
+                "answer": result,
+                "explanation": "Counts duplicate rows in the dataset",
+                "code": "result = f'Number of duplicate rows: {df.duplicated().sum()}'"
+            }
+        
+        # Basic info
+        elif any(phrase in question_lower for phrase in ['info', 'information', 'overview']):
+            result = f"Dataset Info:\n- Shape: {df.shape}\n- Columns: {list(df.columns)}\n- Data types: {df.dtypes.to_dict()}"
+            return {
+                "success": True,
+                "answer": result,
+                "explanation": "Provides basic overview of the dataset",
+                "code": "result = f'Dataset Info: Shape {df.shape}, Columns: {list(df.columns)}'"
+            }
+        
+        return None
 
 # Main Streamlit app
 def main():
     st.title("📊 CSV Analyzer AI")
-    st.markdown("Upload your CSV file and ask questions about your data! 🤖")
+    st.markdown("Upload your CSV file and get instant data analysis! 🤖")
     
     # Sidebar for information
     with st.sidebar:
         st.header("ℹ️ About")
         st.markdown("""
-        This AI-powered app can:
-        - 📈 Analyze your CSV data automatically
-        - 🔍 Generate insights and answers
-        - 💡 Explain results in simple terms
-        - 🔒 Run securely in your browser
-        
-        **How to use:**
-        1. Upload CSV file
-        2. Ask questions about your data
-        3. Get AI-powered analysis
+        **Fast AI-powered data analysis:**
+        - ⚡ Quick responses
+        - 🔍 Smart analysis
+        - 💡 Clear explanations
+        - 🔒 Secure execution
         """)
     
     # Initialize analyzer
     try:
         analyzer = CSVAnalyzerAI()
+        st.success("✅ AI Model loaded successfully!")
     except Exception as e:
         st.error("❌ Failed to initialize AI analyzer. Please check your HUGGINGFACE_KEY in secrets.")
         st.stop()
@@ -231,65 +280,88 @@ def main():
             st.metric("Total Cells", df.shape[0] * df.shape[1])
         
         # Show data preview
-        with st.expander("📋 View Data Preview", expanded=True):
+        with st.expander("📋 View Data Preview", expanded=False):
             tab1, tab2 = st.tabs(["First 10 Rows", "Data Info"])
             with tab1:
                 st.dataframe(df.head(10), use_container_width=True)
             with tab2:
                 st.write("**Column Information:**")
                 for col in df.columns:
-                    st.write(f"- **{col}**: {df[col].dtype} ({(df[col].isna().sum())} missing)")
+                    missing = df[col].isna().sum()
+                    st.write(f"- **{col}**: {df[col].dtype} ({missing} missing)")
         
         # Question section
         st.header("3. Ask Questions")
         
-        # Quick question suggestions
-        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        # Comprehensive question categories
+        data_quality_questions = [
+            "How many missing/null values per column?",
+            "Are there duplicates?",
+            "Does it reflect reality (accuracy check)?",
+            "Are formats uniform (consistency)?",
+            "Conforms to rules (validity)?",
+            "Is the data fresh enough (timeliness)?",
+            "Any sampling biases?",
+            "Distributions and outliers?"
+        ]
         
-        quick_questions = []
+        business_questions = [
+            "What's the dataset's purpose or intended use case?",
+            "What's the size and growth projection?",
+            "Includes needed features (relevance)?",
+            "Relationships preserved (integrity)?",
+            "Correlations or patterns?",
+            "What if it's wrong (impact assessment)?"
+        ]
         
-        if numeric_cols:
-            quick_questions.extend([
-                f"What is the average {numeric_cols[0]}?",
-                f"What is the maximum and minimum {numeric_cols[0]}?",
-                f"Show the distribution of {numeric_cols[0]}"
-            ])
+        technical_questions = [
+            "Can it integrate into pipelines?",
+            "Performance acceptable?",
+            "What compute resources are available?",
+            "How to handle small vs big datasets?"
+        ]
         
-        if categorical_cols:
-            quick_questions.extend([
-                f"What is the most common {categorical_cols[0]}?",
-                f"Show the count of each {categorical_cols[0]}"
-            ])
+        basic_questions = [
+            "What is the average of numeric columns?",
+            "Show column distributions",
+            "What are the most frequent categories?",
+            "Show data types overview",
+            "Basic statistics summary"
+        ]
         
-        if len(numeric_cols) >= 2:
-            quick_questions.append(f"Is there correlation between {numeric_cols[0]} and {numeric_cols[1]}?")
+        # Question selection
+        question_category = st.selectbox(
+            "Choose question category:",
+            ["Basic Analysis", "Data Quality", "Business Context", "Technical Aspects"]
+        )
         
-        quick_questions.extend([
-            "What are the main insights from this data?",
-            "Are there any missing values in the data?",
-            "What patterns can you find in this data?"
-        ])
+        if question_category == "Basic Analysis":
+            quick_questions = basic_questions
+        elif question_category == "Data Quality":
+            quick_questions = data_quality_questions
+        elif question_category == "Business Context":
+            quick_questions = business_questions
+        else:
+            quick_questions = technical_questions
         
-        # Question input
         selected_question = st.selectbox(
-            "Choose a quick question:",
+            "Choose a question:",
             [""] + quick_questions,
-            help="Select a pre-defined question or type your own below"
+            help="Select from comprehensive analysis questions"
         )
         
         custom_question = st.text_input(
             "Or type your own question:",
-            placeholder="e.g., What is the average salary by department? Who has the highest sales?",
-            help="Ask any question about your data"
+            placeholder="e.g., Show correlation between numeric columns",
+            help="Ask any specific question about your data"
         )
         
         # Use selected question or custom question
         question = custom_question if custom_question else selected_question
         
         if st.button("🚀 Analyze Data", type="primary", use_container_width=True) and question:
-            with st.spinner("🤖 AI is analyzing your data. This may take a few seconds..."):
-                result = analyzer.analyze_data(df, question)
+            with st.spinner("⚡ Analyzing your data..."):
+                result = analyzer.analyze_data_fast(df, question)
             
             if result["success"]:
                 st.success("✅ Analysis Complete!")
@@ -305,17 +377,51 @@ def main():
                         st.write(result["answer"])
                 
                 with tab2:
-                    st.subheader("AI Explanation")
+                    st.subheader("Explanation")
                     st.write(result["explanation"])
                 
                 with tab3:
-                    st.subheader("Generated Analysis Code")
+                    st.subheader("Generated Code")
                     st.code(result["code"], language="python")
-                    st.info("💡 This code was automatically generated by the AI to answer your question.")
             
             else:
                 st.error(f"❌ Analysis failed: {result['error']}")
-                st.info("💡 Try rephrasing your question or check if your data supports this analysis.")
+                st.info("💡 Try a different question or rephrase your query.")
+        
+        # Quick analysis buttons
+        st.header("4. Quick Analysis")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("📊 Basic Info", use_container_width=True):
+                st.session_state.quick_question = "Show basic dataset information"
+        
+        with col2:
+            if st.button("🔍 Missing Values", use_container_width=True):
+                st.session_state.quick_question = "How many missing/null values per column?"
+        
+        with col3:
+            if st.button("📈 Statistics", use_container_width=True):
+                st.session_state.quick_question = "Show basic statistics for numeric columns"
+        
+        with col4:
+            if st.button("🔄 Duplicates", use_container_width=True):
+                st.session_state.quick_question = "Are there duplicates?"
+        
+        # Handle quick question from buttons
+        if hasattr(st.session_state, 'quick_question'):
+            question = st.session_state.quick_question
+            with st.spinner("⚡ Quick analysis..."):
+                result = analyzer.analyze_data_fast(df, question)
+            
+            if result["success"]:
+                st.success("✅ Quick Analysis Complete!")
+                st.write("**Results:**", result["answer"])
+            else:
+                st.error(f"Quick analysis failed: {result['error']}")
+            
+            # Clear the quick question
+            del st.session_state.quick_question
     
     else:
         # Welcome message when no file is uploaded
@@ -324,11 +430,12 @@ def main():
         # Sample data option
         if st.button("🎯 Try with Sample Data"):
             sample_data = {
-                'Employee': ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'],
-                'Age': [25, 30, 35, 28, 32],
-                'Salary': [50000, 60000, 70000, 55000, 65000],
-                'Department': ['IT', 'HR', 'IT', 'Finance', 'HR'],
-                'Experience_Years': [2, 5, 8, 3, 6]
+                'Employee': ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace'],
+                'Age': [25, 30, 35, 28, 32, 29, 31],
+                'Salary': [50000, 60000, 70000, 55000, 65000, 58000, 62000],
+                'Department': ['IT', 'HR', 'IT', 'Finance', 'HR', 'IT', 'Finance'],
+                'Experience_Years': [2, 5, 8, 3, 6, 4, 5],
+                'Performance_Score': [85, 90, 78, 92, 88, 85, 91]
             }
             df = pd.DataFrame(sample_data)
             st.session_state.sample_data = df
