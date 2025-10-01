@@ -8,3 +8,4 @@ accelerate
 huggingface_hub
 bitsandbytes
 python-dotenv
+scikit-learn
