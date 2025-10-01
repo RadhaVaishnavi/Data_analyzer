@@ -2,10 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.metrics.pairwise import cosine_similarity
 import re
 import json
 
@@ -16,313 +14,444 @@ st.set_page_config(
     layout="wide"
 )
 
-class LLMAgenticAnalyzer:
+class WorkingCSVAnalyzer:
     def __init__(self):
-        self.model = None
-        self.tokenizer = None
         self.analysis_history = []
-        self._load_lightweight_llm()
-    
-    def _load_lightweight_llm(self):
-        """Load a lightweight, efficient LLM for analysis"""
-        try:
-            # Using a small, fast model for efficiency
-            model_name = "microsoft/DialoGPT-small"  # Lightweight conversational model
-            
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(model_name)
-            
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-                
-            st.success("✅ AI Agent loaded successfully!")
-            
-        except Exception as e:
-            st.error(f"❌ Failed to load AI model: {e}")
-            st.info("🔧 Using rule-based fallback analyzer")
-            self.model = None
-    
-    def _llm_generate(self, prompt, max_length=300):
-        """Generate response using LLM with efficient settings"""
-        if self.model is None:
-            return self._rule_based_fallback(prompt)
-        
-        try:
-            inputs = self.tokenizer.encode(prompt, return_tensors="pt")
-            
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_new_tokens=max_length,
-                    temperature=0.3,  # Low temperature for consistent output
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    num_return_sequences=1,
-                    early_stopping=True
-                )
-            
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            return response.replace(prompt, "").strip()
-            
-        except Exception as e:
-            return self._rule_based_fallback(prompt)
-    
-    def _rule_based_fallback(self, prompt):
-        """Fallback when LLM is not available"""
-        if "missing" in prompt.lower():
-            return "I'll analyze missing values using pandas. Use df.isnull().sum() to count nulls per column."
-        elif "correlation" in prompt.lower():
-            return "I'll calculate correlations between numeric columns using df.corr()."
-        else:
-            return "I'll perform comprehensive data analysis using statistical methods."
-    
-    def _agentic_analysis(self, df, question):
-        """Agentic approach: LLM plans and executes analysis"""
-        
-        # Step 1: LLM understands the question and plans analysis
-        planning_prompt = f"""
-        You are a data analysis agent. Given a dataset with columns: {list(df.columns)}
-        and data types: {df.dtypes.astype(str).to_dict()}
-        
-        Question: {question}
-        
-        Plan the analysis steps. Respond with a JSON plan:
-        {{
-            "analysis_type": "statistical|quality|business|technical",
-            "steps": ["step1", "step2", ...],
-            "required_operations": ["describe", "corr", "groupby", ...],
-            "expected_output": "what result to produce"
-        }}
-        """
-        
-        plan_text = self._llm_generate(planning_prompt, max_length=200)
-        analysis_plan = self._parse_llm_plan(plan_text)
-        
-        # Step 2: Execute the planned analysis
-        results = self._execute_analysis_plan(df, analysis_plan)
-        
-        # Step 3: LLM generates explanation
-        explanation_prompt = f"""
-        Question: {question}
-        Analysis Results: {str(results)[:500]}
-        
-        Provide a clear, concise explanation of what was found:
-        """
-        
-        explanation = self._llm_generate(explanation_prompt, max_length=250)
-        
-        # Step 4: Generate code based on analysis
-        code = self._generate_analysis_code(analysis_plan, results)
-        
-        return {
-            "success": True,
-            "answer": results,
-            "explanation": explanation,
-            "code": code,
-            "analysis_plan": analysis_plan
-        }
-    
-    def _parse_llm_plan(self, plan_text):
-        """Parse LLM-generated analysis plan"""
-        try:
-            # Try to extract JSON from response
-            json_match = re.search(r'\{.*\}', plan_text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except:
-            pass
-        
-        # Fallback plan
-        return {
-            "analysis_type": "comprehensive",
-            "steps": ["basic_statistics", "data_quality_check"],
-            "required_operations": ["describe", "isnull", "info"],
-            "expected_output": "dataset overview and quality assessment"
-        }
-    
-    def _execute_analysis_plan(self, df, plan):
-        """Execute the analysis plan using pandas operations"""
-        operations = plan.get("required_operations", [])
-        results = {}
-        
-        for op in operations:
-            try:
-                if op == "describe" and len(df.select_dtypes(include=[np.number]).columns) > 0:
-                    results["statistics"] = df.describe().to_dict()
-                elif op == "isnull":
-                    results["missing_values"] = df.isnull().sum().to_dict()
-                elif op == "corr" and len(df.select_dtypes(include=[np.number]).columns) >= 2:
-                    results["correlations"] = df.corr().to_dict()
-                elif op == "groupby":
-                    # Simple groupby on first categorical column
-                    cat_cols = df.select_dtypes(include=['object']).columns
-                    if len(cat_cols) > 0:
-                        numeric_cols = df.select_dtypes(include=[np.number]).columns
-                        if len(numeric_cols) > 0:
-                            results["group_analysis"] = df.groupby(cat_cols[0])[numeric_cols[0]].mean().to_dict()
-                elif op == "info":
-                    results["dataset_info"] = {
-                        "shape": df.shape,
-                        "columns": list(df.columns),
-                        "data_types": df.dtypes.astype(str).to_dict()
-                    }
-            except Exception as e:
-                continue
-        
-        # Ensure we have at least basic results
-        if not results:
-            results = {
-                "basic_info": {
-                    "rows": len(df),
-                    "columns": len(df.columns),
-                    "memory_mb": round(df.memory_usage(deep=True).sum() / 1024**2, 2)
-                }
-            }
-        
-        return results
-    
-    def _generate_analysis_code(self, plan, results):
-        """Generate Python code based on the analysis performed"""
-        operations = plan.get("required_operations", [])
-        code_lines = ["# Generated analysis code", "import pandas as pd", "import numpy as np", ""]
-        
-        for op in operations:
-            if op == "describe":
-                code_lines.append("# Basic statistics")
-                code_lines.append("stats = df.describe()")
-            elif op == "isnull":
-                code_lines.append("# Missing values analysis")
-                code_lines.append("missing_data = df.isnull().sum()")
-            elif op == "corr":
-                code_lines.append("# Correlation analysis")
-                code_lines.append("correlation_matrix = df.corr()")
-            elif op == "groupby":
-                code_lines.append("# Group analysis")
-                code_lines.append("grouped_data = df.groupby('column_name')['numeric_column'].mean()")
-        
-        code_lines.append("\n# Final result compilation")
-        code_lines.append("result = {'analysis': 'completed'}")
-        
-        return "\n".join(code_lines)
     
     def analyze_question(self, df, question):
-        """Main agentic analysis entry point"""
+        """Main analysis function that actually works"""
         try:
-            # Store in history
-            self.analysis_history.append({
-                "question": question,
-                "timestamp": pd.Timestamp.now(),
-                "data_shape": df.shape
-            })
+            question_lower = question.lower()
             
-            # Use agentic LLM approach
-            return self._agentic_analysis(df, question)
+            # Handle duplicates question specifically
+            if any(word in question_lower for word in ['duplicate', 'duplicates']):
+                return self._analyze_duplicates(df)
+            
+            # Handle missing values
+            elif any(word in question_lower for word in ['missing', 'null', 'nan']):
+                return self._analyze_missing_values(df)
+            
+            # Handle data types
+            elif any(word in question_lower for word in ['data type', 'dtype', 'type']):
+                return self._analyze_data_types(df)
+            
+            # Handle correlations
+            elif any(word in question_lower for word in ['correlation', 'relationship']):
+                return self._analyze_correlations(df)
+            
+            # Handle basic statistics
+            elif any(word in question_lower for word in ['statistic', 'summary', 'describe']):
+                return self._basic_statistics(df)
+            
+            # Handle purpose analysis
+            elif any(word in question_lower for word in ['purpose', 'use case']):
+                return self._analyze_purpose(df)
+            
+            # Handle validity checks
+            elif any(word in question_lower for word in ['valid', 'validity', 'rule']):
+                return self._analyze_validity(df)
+            
+            # Handle outliers
+            elif any(word in question_lower for word in ['outlier', 'anomaly']):
+                return self._analyze_outliers(df)
+            
+            # Handle distributions
+            elif any(word in question_lower for word in ['distribution', 'histogram']):
+                return self._analyze_distributions(df)
+            
+            # Handle patterns
+            elif any(word in question_lower for word in ['pattern', 'insight']):
+                return self._analyze_patterns(df)
+            
+            # Default comprehensive analysis
+            else:
+                return self._comprehensive_analysis(df, question)
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Analysis error: {str(e)}"
+            }
+    
+    def _analyze_duplicates(self, df):
+        """Analyze duplicate records - FIXED VERSION"""
+        try:
+            # Count duplicates
+            duplicate_count = df.duplicated().sum()
+            duplicate_percentage = (duplicate_count / len(df)) * 100
+            
+            # Get duplicate rows for inspection
+            duplicate_rows = df[df.duplicated(keep=False)]
+            
+            result = {
+                'total_records': len(df),
+                'duplicate_count': duplicate_count,
+                'duplicate_percentage': round(duplicate_percentage, 2),
+                'unique_records': len(df) - duplicate_count,
+                'duplicate_rows_sample': duplicate_rows.head(5).to_dict('records') if duplicate_count > 0 else []
+            }
+            
+            # Create visualization if duplicates exist
+            if duplicate_count > 0:
+                fig = px.bar(
+                    x=['Unique Records', 'Duplicate Records'],
+                    y=[len(df) - duplicate_count, duplicate_count],
+                    title="Duplicate Records Analysis",
+                    color=['Unique', 'Duplicate'],
+                    labels={'x': 'Record Type', 'y': 'Count'}
+                )
+                visualization = fig
+            else:
+                visualization = None
+            
+            explanation = f"Duplicate analysis: Found {duplicate_count} duplicate records ({duplicate_percentage:.1f}% of total). "
+            if duplicate_count > 0:
+                explanation += "Consider removing duplicates for accurate analysis."
+            else:
+                explanation += "No duplicate records found - data is clean!"
+            
+            code = """
+# Check for duplicate rows
+duplicate_count = df.duplicated().sum()
+duplicate_rows = df[df.duplicated(keep=False)]
+
+result = {
+    'total_records': len(df),
+    'duplicate_count': duplicate_count,
+    'duplicate_percentage': round((duplicate_count / len(df)) * 100, 2),
+    'unique_records': len(df) - duplicate_count
+}
+"""
+            
+            return {
+                "success": True,
+                "answer": result,
+                "explanation": explanation,
+                "code": code,
+                "visualization": visualization
+            }
             
         except Exception as e:
             return {
                 "success": False,
-                "error": f"Agentic analysis failed: {str(e)}"
+                "error": f"Duplicate analysis failed: {str(e)}"
             }
-
-class HybridAnalyzer:
-    """Combines LLM agent with rule-based fallbacks"""
-    
-    def __init__(self):
-        self.llm_agent = LLMAgenticAnalyzer()
-        self.rule_analyzer = RuleBasedAnalyzer()
-    
-    def analyze(self, df, question):
-        """Hybrid approach: Try LLM first, fallback to rules"""
-        # For complex questions, use LLM
-        complex_keywords = ['purpose', 'insight', 'pattern', 'relationship', 'trend']
-        
-        if any(keyword in question.lower() for keyword in complex_keywords):
-            result = self.llm_agent.analyze_question(df, question)
-            if result["success"]:
-                return result
-        
-        # For structured questions, use rule-based (faster)
-        return self.rule_analyzer.analyze_question(df, question)
-
-class RuleBasedAnalyzer:
-    """Fast rule-based analyzer (fallback)"""
-    
-    def analyze_question(self, df, question):
-        """Rule-based analysis without LLM"""
-        question_lower = question.lower()
-        
-        if any(word in question_lower for word in ['missing', 'null']):
-            return self._analyze_missing_values(df)
-        elif any(word in question_lower for word in ['correlation']):
-            return self._analyze_correlations(df)
-        elif any(word in question_lower for word in ['statistic', 'describe']):
-            return self._basic_statistics(df)
-        elif any(word in question_lower for word in ['purpose', 'use case']):
-            return self._analyze_purpose(df)
-        else:
-            return self._comprehensive_analysis(df, question)
     
     def _analyze_missing_values(self, df):
+        """Analyze missing values"""
         missing_data = df.isnull().sum()
+        missing_percentage = (missing_data / len(df)) * 100
+        
+        result_df = pd.DataFrame({
+            'missing_count': missing_data,
+            'missing_percentage': missing_percentage.round(2),
+            'data_type': df.dtypes.astype(str)
+        })
+        
+        # Create visualization
+        fig = px.bar(
+            x=missing_data.index,
+            y=missing_data.values,
+            title="Missing Values by Column",
+            labels={'x': 'Columns', 'y': 'Missing Count'},
+            color=missing_data.values
+        )
+        
+        explanation = f"Missing values analysis: {missing_data.sum()} total missing values across {len(df.columns)} columns."
+        
+        code = """
+missing_data = df.isnull().sum()
+missing_percentage = (missing_data / len(df)) * 100
+result = pd.DataFrame({
+    'missing_count': missing_data,
+    'missing_percentage': missing_percentage.round(2),
+    'data_type': df.dtypes.astype(str)
+})
+"""
+        
         return {
             "success": True,
-            "answer": missing_data.to_dict(),
-            "explanation": f"Found {missing_data.sum()} total missing values across {len(df.columns)} columns.",
-            "code": "missing_data = df.isnull().sum()\nresult = missing_data"
+            "answer": result_df.to_dict(),
+            "explanation": explanation,
+            "code": code,
+            "visualization": fig
+        }
+    
+    def _analyze_data_types(self, df):
+        """Analyze data types"""
+        type_analysis = {}
+        for col in df.columns:
+            type_analysis[col] = {
+                'data_type': str(df[col].dtype),
+                'non_null_count': df[col].count(),
+                'null_count': df[col].isnull().sum(),
+                'unique_count': df[col].nunique()
+            }
+        
+        explanation = f"Data types analysis: Found {len(df.columns)} columns with various data types."
+        
+        code = """
+type_analysis = {}
+for col in df.columns:
+    type_analysis[col] = {
+        'data_type': str(df[col].dtype),
+        'non_null_count': df[col].count(),
+        'null_count': df[col].isnull().sum(),
+        'unique_count': df[col].nunique()
+    }
+result = type_analysis
+"""
+        
+        return {
+            "success": True,
+            "answer": type_analysis,
+            "explanation": explanation,
+            "code": code
         }
     
     def _analyze_correlations(self, df):
+        """Analyze correlations"""
         numeric_df = df.select_dtypes(include=[np.number])
-        if len(numeric_df.columns) >= 2:
-            corr_matrix = numeric_df.corr()
-            return {
-                "success": True,
-                "answer": corr_matrix.to_dict(),
-                "explanation": "Correlation matrix showing relationships between numeric variables.",
-                "code": "result = df.corr()"
-            }
-        else:
+        
+        if len(numeric_df.columns) < 2:
             return {
                 "success": False,
                 "error": "Need at least 2 numeric columns for correlation analysis"
             }
-    
-    def _basic_statistics(self, df):
+        
+        correlation_matrix = numeric_df.corr()
+        
+        # Create heatmap
+        fig = px.imshow(
+            correlation_matrix,
+            title="Correlation Matrix",
+            aspect="auto",
+            color_continuous_scale="RdBu_r"
+        )
+        
+        explanation = "Correlation analysis shows relationships between numeric variables."
+        
+        code = "result = df.corr()"
+        
         return {
             "success": True,
-            "answer": df.describe().to_dict(),
-            "explanation": "Basic statistical summary of numeric columns.",
-            "code": "result = df.describe()"
+            "answer": correlation_matrix.to_dict(),
+            "explanation": explanation,
+            "code": code,
+            "visualization": fig
+        }
+    
+    def _basic_statistics(self, df):
+        """Basic statistics"""
+        stats = df.describe(include='all').to_dict()
+        
+        explanation = "Basic statistical summary of the dataset."
+        
+        code = "result = df.describe(include='all')"
+        
+        return {
+            "success": True,
+            "answer": stats,
+            "explanation": explanation,
+            "code": code
         }
     
     def _analyze_purpose(self, df):
-        analysis = {
-            "shape": df.shape,
-            "columns": list(df.columns),
-            "suggested_uses": ["Data analysis", "Reporting", "ML modeling"]
+        """Analyze dataset purpose"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+        
+        purpose_analysis = {
+            "dataset_shape": df.shape,
+            "numeric_columns": numeric_cols,
+            "categorical_columns": categorical_cols,
+            "suggested_use_cases": [
+                "Data analysis and visualization",
+                "Statistical modeling",
+                "Business intelligence"
+            ]
         }
+        
+        explanation = f"Dataset with {len(df.columns)} features suitable for various analytical purposes."
+        
+        code = """
+purpose_analysis = {
+    "dataset_shape": df.shape,
+    "numeric_columns": df.select_dtypes(include=[np.number]).columns.tolist(),
+    "categorical_columns": df.select_dtypes(include=['object']).columns.tolist()
+}
+result = purpose_analysis
+"""
+        
         return {
             "success": True,
-            "answer": analysis,
-            "explanation": "Dataset overview and potential use cases.",
-            "code": "result = {'shape': df.shape, 'columns': list(df.columns)}"
+            "answer": purpose_analysis,
+            "explanation": explanation,
+            "code": code
+        }
+    
+    def _analyze_validity(self, df):
+        """Analyze data validity"""
+        validity_checks = {}
+        for col in df.columns:
+            validity_checks[col] = {
+                'total_count': len(df),
+                'non_null_count': df[col].count(),
+                'null_count': df[col].isnull().sum(),
+                'null_percentage': round((df[col].isnull().sum() / len(df)) * 100, 2),
+                'unique_count': df[col].nunique(),
+                'data_type': str(df[col].dtype)
+            }
+        
+        explanation = "Data validity assessment across all columns."
+        
+        code = """
+validity_checks = {}
+for col in df.columns:
+    validity_checks[col] = {
+        'non_null_count': df[col].count(),
+        'null_count': df[col].isnull().sum(),
+        'unique_count': df[col].nunique(),
+        'data_type': str(df[col].dtype)
+    }
+result = validity_checks
+"""
+        
+        return {
+            "success": True,
+            "answer": validity_checks,
+            "explanation": explanation,
+            "code": code
+        }
+    
+    def _analyze_outliers(self, df):
+        """Analyze outliers"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        outlier_analysis = {}
+        
+        for col in numeric_cols:
+            Q1 = df[col].quantile(0.25)
+            Q3 = df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)][col]
+            
+            outlier_analysis[col] = {
+                'outlier_count': len(outliers),
+                'outlier_percentage': round((len(outliers) / len(df)) * 100, 2)
+            }
+        
+        explanation = "Outlier detection using IQR method."
+        
+        code = """
+outlier_analysis = {}
+for col in df.select_dtypes(include=[np.number]).columns:
+    Q1 = df[col].quantile(0.25)
+    Q3 = df[col].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
+    outlier_analysis[col] = len(outliers)
+result = outlier_analysis
+"""
+        
+        return {
+            "success": True,
+            "answer": outlier_analysis,
+            "explanation": explanation,
+            "code": code
+        }
+    
+    def _analyze_distributions(self, df):
+        """Analyze distributions"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        
+        if len(numeric_cols) == 0:
+            return {
+                "success": False,
+                "error": "No numeric columns for distribution analysis"
+            }
+        
+        # Create histograms for first 3 numeric columns
+        figs = []
+        for col in numeric_cols[:3]:
+            fig = px.histogram(df, x=col, title=f"Distribution of {col}")
+            figs.append(fig)
+        
+        explanation = "Distribution analysis of numeric columns."
+        
+        return {
+            "success": True,
+            "answer": {"columns_analyzed": numeric_cols.tolist()},
+            "explanation": explanation,
+            "code": "# Use px.histogram(df, x='column_name') for distribution analysis",
+            "visualization": figs[0] if figs else None
+        }
+    
+    def _analyze_patterns(self, df):
+        """Analyze patterns"""
+        patterns = {
+            'dataset_size': df.shape,
+            'missing_values_total': df.isnull().sum().sum(),
+            'duplicate_rows': df.duplicated().sum(),
+            'numeric_columns_count': len(df.select_dtypes(include=[np.number]).columns),
+            'categorical_columns_count': len(df.select_dtypes(include=['object']).columns)
+        }
+        
+        explanation = "Pattern analysis revealing dataset characteristics."
+        
+        code = """
+patterns = {
+    'dataset_size': df.shape,
+    'missing_values_total': df.isnull().sum().sum(),
+    'duplicate_rows': df.duplicated().sum()
+}
+result = patterns
+"""
+        
+        return {
+            "success": True,
+            "answer": patterns,
+            "explanation": explanation,
+            "code": code
         }
     
     def _comprehensive_analysis(self, df, question):
+        """Comprehensive analysis fallback"""
+        analysis = {
+            'question': question,
+            'dataset_info': {
+                'shape': df.shape,
+                'columns': list(df.columns),
+                'data_types': df.dtypes.astype(str).to_dict()
+            },
+            'data_quality': {
+                'total_missing': df.isnull().sum().sum(),
+                'duplicate_rows': df.duplicated().sum()
+            }
+        }
+        
+        explanation = f"Comprehensive analysis for: {question}"
+        
+        code = "# Comprehensive dataset analysis"
+        
         return {
             "success": True,
-            "answer": {"message": "Analysis completed", "question": question},
-            "explanation": "Comprehensive analysis performed using rule-based methods.",
-            "code": "# Rule-based analysis completed"
+            "answer": analysis,
+            "explanation": explanation,
+            "code": code
         }
 
 # Main Streamlit App
 def main():
-    st.title("🤖 AI CSV Analyzer Agent")
-    st.markdown("Intelligent data analysis powered by LLM agents! 🚀")
+    st.title("📊 Smart CSV Analyzer")
+    st.markdown("Upload your CSV and get instant, reliable analysis! ⚡")
     
-    # Initialize the hybrid analyzer
-    analyzer = HybridAnalyzer()
+    # Initialize analyzer
+    analyzer = WorkingCSVAnalyzer()
     
     # File upload
     st.header("1. Upload Your CSV File")
@@ -338,60 +467,102 @@ def main():
     
     if df is not None:
         st.header("2. Data Overview")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Rows", df.shape[0])
         with col2:
             st.metric("Columns", df.shape[1])
         with col3:
-            st.metric("Memory", f"{df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
+            st.metric("Missing", df.isnull().sum().sum())
+        with col4:
+            st.metric("Duplicates", df.duplicated().sum())
         
-        with st.expander("Data Preview"):
-            st.dataframe(df.head())
+        with st.expander("📋 Data Preview"):
+            st.dataframe(df.head(10))
         
-        st.header("3. Ask AI Agent")
+        st.header("3. Ask Analysis Questions")
         
-        # Question categories
-        question_type = st.selectbox(
-            "Analysis Type",
-            ["🤔 Smart Analysis", "📊 Data Quality", "🔍 Statistical", "💼 Business Insights"]
+        # Quick action buttons
+        st.subheader("Quick Analysis")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("🔍 Check Duplicates", use_container_width=True):
+                st.session_state.quick_question = "r there any duplicates?"
+        
+        with col2:
+            if st.button("📊 Missing Values", use_container_width=True):
+                st.session_state.quick_question = "how many missing values?"
+        
+        with col3:
+            if st.button("📈 Basic Stats", use_container_width=True):
+                st.session_state.quick_question = "show basic statistics"
+        
+        with col4:
+            if st.button("🎯 Data Types", use_container_width=True):
+                st.session_state.quick_question = "what are the data types?"
+        
+        # Question input
+        question = st.text_input(
+            "Or ask your own question:",
+            placeholder="e.g., r there any duplicates? how many missing values? show correlations...",
+            key="question_input"
         )
         
-        question = st.text_area(
-            "Ask your data question:",
-            placeholder="e.g., What patterns can you find in this data? What's the relationship between variables?"
-        )
+        # Use quick question if set
+        if hasattr(st.session_state, 'quick_question'):
+            question = st.session_state.quick_question
+            # Clear it after use
+            del st.session_state.quick_question
         
-        if st.button("🚀 Ask AI Agent", type="primary"):
-            with st.spinner("🤖 AI Agent is analyzing..."):
-                result = analyzer.analyze(df, question)
+        if question and st.button("🚀 Analyze", type="primary", use_container_width=True):
+            with st.spinner("🔍 Analyzing your data..."):
+                result = analyzer.analyze_question(df, question)
             
             if result["success"]:
-                st.success("✅ AI Analysis Complete!")
+                st.success("✅ Analysis Complete!")
                 
-                tabs = st.tabs(["📈 Results", "💡 Explanation", "🔧 Code", "📋 Plan"])
+                tabs = st.tabs(["📊 Results", "💡 Explanation", "🔧 Code"])
                 
                 with tabs[0]:
                     st.subheader("Analysis Results")
-                    st.json(result["answer"])
+                    answer = result["answer"]
+                    
+                    if isinstance(answer, dict):
+                        st.json(answer)
+                    else:
+                        st.write(answer)
+                    
+                    # Show visualization if available
+                    if "visualization" in result and result["visualization"]:
+                        st.plotly_chart(result["visualization"], use_container_width=True)
                 
                 with tabs[1]:
-                    st.subheader("AI Explanation")
+                    st.subheader("Explanation")
                     st.write(result["explanation"])
                 
                 with tabs[2]:
-                    st.subheader("Generated Code")
+                    st.subheader("Analysis Code")
                     st.code(result["code"], language="python")
-                
-                with tabs[3]:
-                    st.subheader("Analysis Plan")
-                    if "analysis_plan" in result:
-                        st.json(result["analysis_plan"])
-                    else:
-                        st.info("Rule-based analysis used")
             
             else:
                 st.error(f"❌ {result['error']}")
+    
+    else:
+        st.info("👆 Upload a CSV file to start analyzing!")
+        
+        # Sample data
+        if st.button("🎯 Try Sample Data"):
+            sample_data = {
+                'ID': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                'Name': ['Alice', 'Bob', 'Charlie', 'Alice', 'Eve', 'Frank', 'Grace', 'Bob', 'Ivy', 'Jack'],
+                'Age': [25, 30, 35, 25, 28, 32, 29, 30, 27, 31],
+                'Salary': [50000, 60000, 70000, 50000, 55000, 65000, 58000, 60000, 52000, 62000],
+                'Department': ['IT', 'HR', 'IT', 'IT', 'Finance', 'HR', 'IT', 'HR', 'Finance', 'IT']
+            }
+            df = pd.DataFrame(sample_data)
+            st.session_state.sample_data = df
+            st.rerun()
 
 if __name__ == "__main__":
     main()
