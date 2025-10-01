@@ -1,251 +1,383 @@
 import streamlit as st
 import pandas as pd
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import os
-import sys
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import re
+import io
 
 # Configure the page
 st.set_page_config(
-    page_title="CSV Analyzer AI",
+    page_title="Smart CSV Analyzer",
     page_icon="📊",
     layout="wide"
 )
 
-# Security check function
-def is_code_safe(code: str) -> bool:
-    """Check if code contains dangerous operations"""
-    forbidden_patterns = [
-        'os.', 'sys.', 'eval', 'exec', 'open', '__import__', 
-        'subprocess', 'shutil', 'rmdir', 'remove', 'unlink',
-        'write(', 'read(', 'delete', 'rm ', 'format(', 'compile(',
-        'input(', 'getpass', 'pickle', 'yaml', 'json.loads'
-    ]
-    return not any(pattern in code for pattern in forbidden_patterns)
-
-def clean_generated_code(code: str) -> str:
-    """Clean and validate generated code"""
-    # Remove any markdown formatting
-    code = re.sub(r'```python|```', '', code).strip()
-    
-    # Remove any explanatory text before/after code
-    lines = code.split('\n')
-    code_lines = []
-    in_code = False
-    
-    for line in lines:
-        if line.strip() and not line.strip().startswith(('#', '"', "'")) and 'print(' not in line:
-            if any(keyword in line for keyword in ['import', 'def ', 'class ', '=', 'df.', 'result =']):
-                in_code = True
-            if in_code:
-                code_lines.append(line)
-    
-    cleaned_code = '\n'.join(code_lines)
-    
-    # Ensure result variable is set
-    if 'result =' not in cleaned_code:
-        cleaned_code += '\nresult = "Analysis completed"'
-    
-    return cleaned_code
-
-# Cache the model loading
-@st.cache_resource(show_spinner=False)
-def load_analyzer_model():
-    """Load the model with secure token handling"""
-    try:
-        # Get token from Streamlit secrets
-        HF_TOKEN = st.secrets.get("HUGGINGFACE_KEY")
-        
-        if not HF_TOKEN:
-            st.error("🔐 HUGGINGFACE_KEY not found in Streamlit secrets. Please add it to your secrets.")
-            return None
-            
-        model_name = "microsoft/DialoGPT-medium"
-        
-        # Load tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name, 
-            token=HF_TOKEN,
-            trust_remote_code=True
-        )
-        
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            token=HF_TOKEN,
-            device_map="auto",
-            torch_dtype=torch.float16,
-            trust_remote_code=True
-        )
-        
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            
-        return tokenizer, model
-        
-    except Exception as e:
-        st.error(f"❌ Failed to load model: {str(e)}")
-        st.info("💡 Make sure your HUGGINGFACE_KEY is valid and has access to the model.")
-        return None
-
-class CSVAnalyzerAI:
+class SmartCSVAnalyzer:
     def __init__(self):
-        model_components = load_analyzer_model()
-        if model_components:
-            self.tokenizer, self.model = model_components
-            self.safe_imports = {'pd': pd, 'np': __import__('numpy')}
-        else:
-            raise Exception("Model failed to load")
+        self.analysis_templates = self._load_analysis_templates()
     
-    def _generate_text_fast(self, prompt: str, max_length: int = 200) -> str:
-        """Generate text using the model with optimized settings"""
-        try:
-            inputs = self.tokenizer.encode(prompt, return_tensors="pt")
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_new_tokens=max_length,
-                    temperature=0.3,  # Lower temperature for more focused output
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    num_return_sequences=1,
-                    early_stopping=True
-                )
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            return response.replace(prompt, "").strip()
-        except Exception as e:
-            return f"# Error in code generation\nresult = 'Failed to generate analysis code'"
+    def _load_analysis_templates(self):
+        """Pre-defined analysis templates for reliable execution"""
+        return {
+            'data_quality': {
+                'missing_values': self._analyze_missing_values,
+                'data_types': self._analyze_data_types,
+                'duplicates': self._analyze_duplicates,
+                'validity': self._analyze_validity,
+                'outliers': self._analyze_outliers
+            },
+            'statistical': {
+                'basic_stats': self._basic_statistics,
+                'correlations': self._analyze_correlations,
+                'distributions': self._analyze_distributions
+            },
+            'business': {
+                'purpose': self._analyze_purpose,
+                'patterns': self._analyze_patterns,
+                'insights': self._generate_insights
+            }
+        }
     
-    def analyze_data_fast(self, df, question: str):
-        """Fast analysis with predefined patterns for common questions"""
+    def analyze_question(self, df, question):
+        """Main analysis function with reliable template matching"""
         try:
-            # Quick analysis for common patterns
-            quick_result = self._quick_analysis(df, question)
-            if quick_result:
-                return quick_result
+            question_lower = question.lower()
             
-            # For complex questions, use AI with timeout
-            profile = {
-                "columns": list(df.columns),
-                "data_types": df.dtypes.astype(str).to_dict(),
-                "shape": df.shape,
-                "numeric_columns": df.select_dtypes(include=['number']).columns.tolist(),
-                "categorical_columns": df.select_dtypes(include=['object', 'category']).columns.tolist()
+            # Map questions to analysis functions
+            if any(word in question_lower for word in ['missing', 'null', 'nan']):
+                return self._analyze_missing_values(df)
+            
+            elif any(word in question_lower for word in ['validity', 'rules', 'conform', 'valid']):
+                return self._analyze_validity(df)
+            
+            elif any(word in question_lower for word in ['purpose', 'use case', 'intended']):
+                return self._analyze_purpose(df)
+            
+            elif any(word in question_lower for word in ['duplicate', 'duplicates']):
+                return self._analyze_duplicates(df)
+            
+            elif any(word in question_lower for word in ['correlation', 'relationship']):
+                return self._analyze_correlations(df)
+            
+            elif any(word in question_lower for word in ['outlier', 'anomaly']):
+                return self._analyze_outliers(df)
+            
+            elif any(word in question_lower for word in ['distribution', 'histogram']):
+                return self._analyze_distributions(df)
+            
+            elif any(word in question_lower for word in ['statistic', 'summary', 'describe']):
+                return self._basic_statistics(df)
+            
+            elif any(word in question_lower for word in ['pattern', 'insight', 'trend']):
+                return self._generate_insights(df)
+            
+            elif any(word in question_lower for word in ['size', 'shape', 'dimension']):
+                return self._analyze_dataset_size(df)
+            
+            elif any(word in question_lower for word in ['type', 'dtype', 'data type']):
+                return self._analyze_data_types(df)
+            
+            else:
+                # Default comprehensive analysis
+                return self._comprehensive_analysis(df, question)
+                
+        except Exception as e:
+            return self._error_response(f"Analysis error: {str(e)}")
+    
+    def _analyze_missing_values(self, df):
+        """Analyze missing values comprehensively"""
+        missing_data = df.isnull().sum()
+        missing_percentage = (missing_data / len(df)) * 100
+        
+        result_df = pd.DataFrame({
+            'missing_count': missing_data,
+            'missing_percentage': missing_percentage.round(2),
+            'data_type': df.dtypes.astype(str)
+        })
+        
+        # Create visualization
+        fig = px.bar(
+            x=missing_data.index,
+            y=missing_data.values,
+            title="Missing Values by Column",
+            labels={'x': 'Columns', 'y': 'Missing Count'}
+        )
+        fig.update_layout(showlegend=False)
+        
+        return {
+            "success": True,
+            "answer": result_df,
+            "explanation": f"Missing values analysis: {missing_data.sum()} total missing values across {len(df.columns)} columns. Columns with >20% missing data may need special attention.",
+            "visualization": fig,
+            "code": """
+missing_data = df.isnull().sum()
+missing_percentage = (missing_data / len(df)) * 100
+result = pd.DataFrame({
+    'missing_count': missing_data,
+    'missing_percentage': missing_percentage.round(2),
+    'data_type': df.dtypes.astype(str)
+})
+"""
+        }
+    
+    def _analyze_validity(self, df):
+        """Analyze data validity and rule compliance"""
+        validity_checks = {}
+        
+        for col in df.columns:
+            col_checks = {
+                'total_count': len(df),
+                'non_null_count': df[col].count(),
+                'null_count': df[col].isnull().sum(),
+                'null_percentage': round((df[col].isnull().sum() / len(df)) * 100, 2),
+                'unique_count': df[col].nunique(),
+                'data_type': str(df[col].dtype),
+                'sample_values': df[col].dropna().head(3).tolist() if df[col].dtype == 'object' else 'N/A'
             }
             
-            # Simplified prompt for faster generation
-            code_prompt = f"Data: {profile['columns']}. Question: {question}. Code:"
+            # Additional checks based on data type
+            if pd.api.types.is_numeric_dtype(df[col]):
+                col_checks.update({
+                    'min_value': df[col].min(),
+                    'max_value': df[col].max(),
+                    'mean_value': df[col].mean(),
+                    'has_negative': (df[col] < 0).any()
+                })
             
-            generated_text = self._generate_text_fast(code_prompt, max_length=150)
-            code = clean_generated_code(generated_text)
-            
-            # Security check
-            if not is_code_safe(code):
-                return {
-                    "success": False,
-                    "error": "Security violation detected"
+            validity_checks[col] = col_checks
+        
+        result_df = pd.DataFrame(validity_checks).T
+        
+        return {
+            "success": True,
+            "answer": result_df,
+            "explanation": "Data validity assessment: Checks completeness, uniqueness, and basic data integrity rules for each column. Look for high null percentages or unexpected data types.",
+            "code": """
+validity_checks = {}
+for col in df.columns:
+    col_checks = {
+        'total_count': len(df),
+        'non_null_count': df[col].count(),
+        'null_count': df[col].isnull().sum(),
+        'null_percentage': round((df[col].isnull().sum() / len(df)) * 100, 2),
+        'unique_count': df[col].nunique(),
+        'data_type': str(df[col].dtype)
+    }
+    if pd.api.types.is_numeric_dtype(df[col]):
+        col_checks.update({
+            'min_value': df[col].min(),
+            'max_value': df[col].max(),
+            'mean_value': df[col].mean()
+        })
+    validity_checks[col] = col_checks
+result = pd.DataFrame(validity_checks).T
+"""
+        }
+    
+    def _analyze_purpose(self, df):
+        """Analyze dataset purpose and potential use cases"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+        
+        # Determine potential use cases
+        use_cases = []
+        
+        if len(numeric_cols) >= 2:
+            use_cases.append("Predictive modeling and regression analysis")
+        if len(categorical_cols) >= 1:
+            use_cases.append("Classification and segmentation analysis")
+        if len(date_cols) >= 1:
+            use_cases.append("Time series analysis and forecasting")
+        if len(numeric_cols) >= 3:
+            use_cases.append("Multivariate analysis and dimensionality reduction")
+        
+        if not use_cases:
+            use_cases = ["General data analysis and exploration"]
+        
+        purpose_analysis = {
+            "dataset_shape": df.shape,
+            "total_records": len(df),
+            "total_features": len(df.columns),
+            "numeric_columns": numeric_cols,
+            "categorical_columns": categorical_cols,
+            "date_columns": date_cols,
+            "suggested_use_cases": use_cases,
+            "data_complexity": "High" if len(numeric_cols) > 5 else "Medium" if len(numeric_cols) > 2 else "Low"
+        }
+        
+        return {
+            "success": True,
+            "answer": purpose_analysis,
+            "explanation": f"Dataset purpose analysis: This {purpose_analysis['data_complexity'].lower()} complexity dataset with {len(df.columns)} features suggests use cases like {', '.join(use_cases[:2])}.",
+            "code": """
+numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+purpose_analysis = {
+    "dataset_shape": df.shape,
+    "numeric_columns": numeric_cols,
+    "categorical_columns": categorical_cols,
+    "suggested_use_cases": ["Data analysis", "Machine learning", "Business intelligence"]
+}
+result = purpose_analysis
+"""
+        }
+    
+    def _analyze_correlations(self, df):
+        """Analyze correlations between numeric columns"""
+        numeric_df = df.select_dtypes(include=[np.number])
+        
+        if len(numeric_df.columns) < 2:
+            return self._error_response("Need at least 2 numeric columns for correlation analysis")
+        
+        correlation_matrix = numeric_df.corr()
+        
+        # Create heatmap visualization
+        fig = px.imshow(
+            correlation_matrix,
+            title="Correlation Matrix Heatmap",
+            aspect="auto",
+            color_continuous_scale="RdBu_r"
+        )
+        
+        # Find strong correlations
+        strong_correlations = []
+        for i in range(len(correlation_matrix.columns)):
+            for j in range(i+1, len(correlation_matrix.columns)):
+                corr_value = correlation_matrix.iloc[i, j]
+                if abs(corr_value) > 0.7:
+                    strong_correlations.append({
+                        'feature_1': correlation_matrix.columns[i],
+                        'feature_2': correlation_matrix.columns[j],
+                        'correlation': round(corr_value, 3)
+                    })
+        
+        analysis_summary = {
+            'correlation_matrix': correlation_matrix,
+            'strong_correlations': strong_correlations,
+            'matrix_shape': correlation_matrix.shape
+        }
+        
+        return {
+            "success": True,
+            "answer": analysis_summary,
+            "explanation": f"Correlation analysis: Found {len(strong_correlations)} strong correlations (|r| > 0.7). Values close to 1/-1 indicate strong positive/negative relationships.",
+            "visualization": fig,
+            "code": """
+numeric_df = df.select_dtypes(include=[np.number])
+correlation_matrix = numeric_df.corr()
+result = {
+    'correlation_matrix': correlation_matrix,
+    'strong_correlations': []  # Would be calculated separately
+}
+"""
+        }
+    
+    def _analyze_duplicates(self, df):
+        """Analyze duplicate records"""
+        duplicate_count = df.duplicated().sum()
+        duplicate_percentage = (duplicate_count / len(df)) * 100
+        
+        analysis_result = {
+            'total_records': len(df),
+            'duplicate_count': duplicate_count,
+            'duplicate_percentage': round(duplicate_percentage, 2),
+            'unique_records': len(df) - duplicate_count
+        }
+        
+        return {
+            "success": True,
+            "answer": analysis_result,
+            "explanation": f"Duplicate analysis: {duplicate_count} duplicate records ({duplicate_percentage:.1f}% of total). High duplication rates may indicate data collection issues.",
+            "code": "result = {'duplicate_count': df.duplicated().sum(), 'total_records': len(df)}"
+        }
+    
+    def _basic_statistics(self, df):
+        """Generate comprehensive basic statistics"""
+        stats_summary = {
+            'dataset_shape': df.shape,
+            'column_stats': {},
+            'overall_metrics': {
+                'total_missing': df.isnull().sum().sum(),
+                'total_duplicates': df.duplicated().sum(),
+                'memory_usage_mb': round(df.memory_usage(deep=True).sum() / 1024**2, 2)
+            }
+        }
+        
+        for col in df.columns:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                stats_summary['column_stats'][col] = {
+                    'type': 'numeric',
+                    'stats': df[col].describe().to_dict(),
+                    'missing': df[col].isnull().sum()
                 }
-            
-            # Execute code safely
-            exec_globals = {**self.safe_imports, 'df': df}
-            exec_locals = {}
-            exec(code, exec_globals, exec_locals)
-            result = exec_locals.get('result', 'Analysis completed')
-            
-            return {
-                "success": True,
-                "answer": result,
-                "explanation": f"Analysis for: {question}",
-                "code": code
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Execution error: {str(e)}"
-            }
+            else:
+                stats_summary['column_stats'][col] = {
+                    'type': 'categorical',
+                    'unique_count': df[col].nunique(),
+                    'most_frequent': df[col].mode().iloc[0] if not df[col].empty else 'N/A',
+                    'missing': df[col].isnull().sum()
+                }
+        
+        return {
+            "success": True,
+            "answer": stats_summary,
+            "explanation": f"Basic statistics: Dataset with {df.shape[0]} rows, {df.shape[1]} columns. Total memory usage: {stats_summary['overall_metrics']['memory_usage_mb']} MB.",
+            "code": """
+stats_summary = {
+    'dataset_shape': df.shape,
+    'numeric_stats': df.describe().to_dict(),
+    'missing_values': df.isnull().sum().to_dict()
+}
+result = stats_summary
+"""
+        }
     
-    def _quick_analysis(self, df, question: str):
-        """Handle common questions with predefined code patterns"""
-        question_lower = question.lower()
+    def _comprehensive_analysis(self, df, question):
+        """Fallback comprehensive analysis"""
+        analysis_result = {
+            'question_asked': question,
+            'dataset_overview': {
+                'shape': df.shape,
+                'columns': list(df.columns),
+                'data_types': df.dtypes.astype(str).to_dict()
+            },
+            'data_quality': {
+                'total_missing': df.isnull().sum().sum(),
+                'duplicate_rows': df.duplicated().sum(),
+                'memory_usage_mb': round(df.memory_usage(deep=True).sum() / 1024**2, 2)
+            },
+            'recommendations': [
+                "Use specific questions for detailed analysis",
+                "Try asking about correlations, distributions, or data quality",
+                "Upload larger datasets for more comprehensive insights"
+            ]
+        }
         
-        # Basic statistics
-        if any(phrase in question_lower for phrase in ['missing', 'null', 'nan']):
-            missing_data = df.isnull().sum()
-            result = f"Missing values per column:\n{missing_data}"
-            return {
-                "success": True,
-                "answer": result,
-                "explanation": "Shows count of missing/null values for each column in the dataset",
-                "code": "result = df.isnull().sum()"
-            }
-        
-        # Dataset size
-        elif any(phrase in question_lower for phrase in ['size', 'shape', 'dimension']):
-            result = f"Dataset shape: {df.shape} (rows: {df.shape[0]}, columns: {df.shape[1]})"
-            return {
-                "success": True,
-                "answer": result,
-                "explanation": "Shows the dimensions of your dataset",
-                "code": "result = f'Dataset shape: {df.shape} (rows: {df.shape[0]}, columns: {df.shape[1]})'"
-            }
-        
-        # Data types
-        elif any(phrase in question_lower for phrase in ['data type', 'dtype', 'data types']):
-            result = f"Data types:\n{df.dtypes}"
-            return {
-                "success": True,
-                "answer": result,
-                "explanation": "Shows the data types of each column",
-                "code": "result = df.dtypes"
-            }
-        
-        # Duplicates
-        elif any(phrase in question_lower for phrase in ['duplicate', 'duplicates']):
-            duplicate_count = df.duplicated().sum()
-            result = f"Number of duplicate rows: {duplicate_count}"
-            return {
-                "success": True,
-                "answer": result,
-                "explanation": "Counts duplicate rows in the dataset",
-                "code": "result = f'Number of duplicate rows: {df.duplicated().sum()}'"
-            }
-        
-        # Basic info
-        elif any(phrase in question_lower for phrase in ['info', 'information', 'overview']):
-            result = f"Dataset Info:\n- Shape: {df.shape}\n- Columns: {list(df.columns)}\n- Data types: {df.dtypes.to_dict()}"
-            return {
-                "success": True,
-                "answer": result,
-                "explanation": "Provides basic overview of the dataset",
-                "code": "result = f'Dataset Info: Shape {df.shape}, Columns: {list(df.columns)}'"
-            }
-        
-        return None
+        return {
+            "success": True,
+            "answer": analysis_result,
+            "explanation": f"Comprehensive analysis for: '{question}'. For more specific insights, try asking about particular columns or data aspects.",
+            "code": "# General dataset analysis performed"
+        }
+    
+    def _error_response(self, error_message):
+        """Standard error response"""
+        return {
+            "success": False,
+            "error": error_message
+        }
 
-# Main Streamlit app
+# Main Streamlit App
 def main():
-    st.title("📊 CSV Analyzer AI")
-    st.markdown("Upload your CSV file and get instant data analysis! 🤖")
-    
-    # Sidebar for information
-    with st.sidebar:
-        st.header("ℹ️ About")
-        st.markdown("""
-        **Fast AI-powered data analysis:**
-        - ⚡ Quick responses
-        - 🔍 Smart analysis
-        - 💡 Clear explanations
-        - 🔒 Secure execution
-        """)
+    st.title("📊 Smart CSV Analyzer")
+    st.markdown("Upload your CSV and get instant, reliable data analysis! ⚡")
     
     # Initialize analyzer
-    try:
-        analyzer = CSVAnalyzerAI()
-        st.success("✅ AI Model loaded successfully!")
-    except Exception as e:
-        st.error("❌ Failed to initialize AI analyzer. Please check your HUGGINGFACE_KEY in secrets.")
-        st.stop()
+    analyzer = SmartCSVAnalyzer()
     
     # File upload section
     st.header("1. Upload Your CSV File")
@@ -269,168 +401,148 @@ def main():
     
     # Display data preview
     if df is not None:
-        st.header("2. Data Preview")
+        st.header("2. Data Overview")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Rows", df.shape[0])
         with col2:
             st.metric("Total Columns", df.shape[1])
         with col3:
-            st.metric("Total Cells", df.shape[0] * df.shape[1])
+            st.metric("Missing Values", df.isnull().sum().sum())
+        with col4:
+            st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
         
-        # Show data preview
-        with st.expander("📋 View Data Preview", expanded=False):
-            tab1, tab2 = st.tabs(["First 10 Rows", "Data Info"])
+        # Quick data preview
+        with st.expander("📋 Data Preview", expanded=False):
+            tab1, tab2 = st.tabs(["First 10 Rows", "Column Info"])
             with tab1:
                 st.dataframe(df.head(10), use_container_width=True)
             with tab2:
-                st.write("**Column Information:**")
                 for col in df.columns:
                     missing = df[col].isna().sum()
-                    st.write(f"- **{col}**: {df[col].dtype} ({missing} missing)")
+                    dtype = df[col].dtype
+                    unique = df[col].nunique()
+                    st.write(f"**{col}**: {dtype} | {missing} missing | {unique} unique values")
         
         # Question section
-        st.header("3. Ask Questions")
+        st.header("3. Ask Analysis Questions")
         
-        # Comprehensive question categories
-        data_quality_questions = [
-            "How many missing/null values per column?",
-            "Are there duplicates?",
-            "Does it reflect reality (accuracy check)?",
-            "Are formats uniform (consistency)?",
-            "Conforms to rules (validity)?",
-            "Is the data fresh enough (timeliness)?",
-            "Any sampling biases?",
-            "Distributions and outliers?"
-        ]
+        # Categorized questions
+        analysis_categories = {
+            "📈 Data Quality": [
+                "How many missing/null values per column?",
+                "Conforms to rules (validity)?",
+                "Are there duplicates?",
+                "Data types overview"
+            ],
+            "🔍 Statistical Analysis": [
+                "Basic statistics summary",
+                "Correlations between numeric columns",
+                "Data distributions",
+                "Outliers detection"
+            ],
+            "💼 Business Insights": [
+                "What's the dataset's purpose or intended use case?",
+                "Key patterns and insights",
+                "Data freshness and relevance",
+                "Integration potential"
+            ]
+        }
         
-        business_questions = [
-            "What's the dataset's purpose or intended use case?",
-            "What's the size and growth projection?",
-            "Includes needed features (relevance)?",
-            "Relationships preserved (integrity)?",
-            "Correlations or patterns?",
-            "What if it's wrong (impact assessment)?"
-        ]
-        
-        technical_questions = [
-            "Can it integrate into pipelines?",
-            "Performance acceptable?",
-            "What compute resources are available?",
-            "How to handle small vs big datasets?"
-        ]
-        
-        basic_questions = [
-            "What is the average of numeric columns?",
-            "Show column distributions",
-            "What are the most frequent categories?",
-            "Show data types overview",
-            "Basic statistics summary"
-        ]
+        # Category selection
+        selected_category = st.selectbox(
+            "Choose analysis category:",
+            list(analysis_categories.keys())
+        )
         
         # Question selection
-        question_category = st.selectbox(
-            "Choose question category:",
-            ["Basic Analysis", "Data Quality", "Business Context", "Technical Aspects"]
-        )
-        
-        if question_category == "Basic Analysis":
-            quick_questions = basic_questions
-        elif question_category == "Data Quality":
-            quick_questions = data_quality_questions
-        elif question_category == "Business Context":
-            quick_questions = business_questions
-        else:
-            quick_questions = technical_questions
-        
         selected_question = st.selectbox(
             "Choose a question:",
-            [""] + quick_questions,
-            help="Select from comprehensive analysis questions"
+            [""] + analysis_categories[selected_category]
         )
         
+        # Custom question
         custom_question = st.text_input(
             "Or type your own question:",
-            placeholder="e.g., Show correlation between numeric columns",
-            help="Ask any specific question about your data"
+            placeholder="e.g., Show relationship between age and salary"
         )
         
-        # Use selected question or custom question
+        # Use selected or custom question
         question = custom_question if custom_question else selected_question
-        
-        if st.button("🚀 Analyze Data", type="primary", use_container_width=True) and question:
-            with st.spinner("⚡ Analyzing your data..."):
-                result = analyzer.analyze_data_fast(df, question)
-            
-            if result["success"]:
-                st.success("✅ Analysis Complete!")
-                
-                # Display results in tabs
-                tab1, tab2, tab3 = st.tabs(["📊 Results", "💡 Explanation", "🔧 Generated Code"])
-                
-                with tab1:
-                    st.subheader("Analysis Results")
-                    if isinstance(result["answer"], (pd.DataFrame, pd.Series)):
-                        st.dataframe(result["answer"], use_container_width=True)
-                    else:
-                        st.write(result["answer"])
-                
-                with tab2:
-                    st.subheader("Explanation")
-                    st.write(result["explanation"])
-                
-                with tab3:
-                    st.subheader("Generated Code")
-                    st.code(result["code"], language="python")
-            
-            else:
-                st.error(f"❌ Analysis failed: {result['error']}")
-                st.info("💡 Try a different question or rephrase your query.")
         
         # Quick analysis buttons
         st.header("4. Quick Analysis")
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if st.button("📊 Basic Info", use_container_width=True):
-                st.session_state.quick_question = "Show basic dataset information"
+            if st.button("🔍 Data Quality", use_container_width=True):
+                question = "Conforms to rules (validity)?"
         
         with col2:
-            if st.button("🔍 Missing Values", use_container_width=True):
-                st.session_state.quick_question = "How many missing/null values per column?"
+            if st.button("📈 Correlations", use_container_width=True):
+                question = "Correlations between numeric columns"
         
         with col3:
-            if st.button("📈 Statistics", use_container_width=True):
-                st.session_state.quick_question = "Show basic statistics for numeric columns"
+            if st.button("📊 Statistics", use_container_width=True):
+                question = "Basic statistics summary"
         
         with col4:
-            if st.button("🔄 Duplicates", use_container_width=True):
-                st.session_state.quick_question = "Are there duplicates?"
+            if st.button("🎯 Purpose", use_container_width=True):
+                question = "What's the dataset's purpose or intended use case?"
         
-        # Handle quick question from buttons
-        if hasattr(st.session_state, 'quick_question'):
-            question = st.session_state.quick_question
-            with st.spinner("⚡ Quick analysis..."):
-                result = analyzer.analyze_data_fast(df, question)
+        # Perform analysis
+        if question and st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+            with st.spinner("⚡ Analyzing your data..."):
+                result = analyzer.analyze_question(df, question)
             
             if result["success"]:
-                st.success("✅ Quick Analysis Complete!")
-                st.write("**Results:**", result["answer"])
-            else:
-                st.error(f"Quick analysis failed: {result['error']}")
+                st.success("✅ Analysis Complete!")
+                
+                # Display results
+                tab1, tab2, tab3 = st.tabs(["📊 Results", "💡 Explanation", "🔧 Code"])
+                
+                with tab1:
+                    st.subheader("Analysis Results")
+                    answer = result["answer"]
+                    
+                    if isinstance(answer, pd.DataFrame):
+                        st.dataframe(answer, use_container_width=True)
+                    elif isinstance(answer, dict):
+                        # Pretty print dictionaries
+                        for key, value in answer.items():
+                            with st.expander(f"**{key}**", expanded=False):
+                                if isinstance(value, (dict, list)):
+                                    st.json(value)
+                                else:
+                                    st.write(value)
+                    else:
+                        st.write(answer)
+                    
+                    # Show visualization if available
+                    if "visualization" in result:
+                        st.plotly_chart(result["visualization"], use_container_width=True)
+                
+                with tab2:
+                    st.subheader("Explanation")
+                    st.write(result["explanation"])
+                
+                with tab3:
+                    st.subheader("Analysis Code")
+                    st.code(result["code"], language="python")
             
-            # Clear the quick question
-            del st.session_state.quick_question
+            else:
+                st.error(f"❌ Analysis failed: {result['error']}")
     
     else:
-        # Welcome message when no file is uploaded
-        st.info("👆 Please upload a CSV file to get started with data analysis!")
+        # Welcome message
+        st.info("👆 Please upload a CSV file to start analyzing your data!")
         
         # Sample data option
         if st.button("🎯 Try with Sample Data"):
             sample_data = {
-                'Employee': ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace'],
+                'Employee_ID': [101, 102, 103, 104, 105, 106, 107],
+                'Name': ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace'],
                 'Age': [25, 30, 35, 28, 32, 29, 31],
                 'Salary': [50000, 60000, 70000, 55000, 65000, 58000, 62000],
                 'Department': ['IT', 'HR', 'IT', 'Finance', 'HR', 'IT', 'Finance'],
