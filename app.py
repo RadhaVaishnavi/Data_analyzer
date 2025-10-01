@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -41,6 +40,279 @@ class SmartCSVAnalyzer:
             }
         }
     
+    def _analyze_data_types(self, df):
+        """Analyze data types of all columns"""
+        type_analysis = {}
+        
+        for col in df.columns:
+            type_analysis[col] = {
+                'data_type': str(df[col].dtype),
+                'non_null_count': df[col].count(),
+                'null_count': df[col].isnull().sum(),
+                'null_percentage': round((df[col].isnull().sum() / len(df)) * 100, 2),
+                'unique_count': df[col].nunique(),
+                'memory_usage_kb': round(df[col].memory_usage(deep=True) / 1024, 2)
+            }
+            
+            # Add type-specific info
+            if pd.api.types.is_numeric_dtype(df[col]):
+                type_analysis[col]['type_category'] = 'numeric'
+                type_analysis[col]['sample_values'] = df[col].dropna().head(3).tolist()
+            elif pd.api.types.is_string_dtype(df[col]):
+                type_analysis[col]['type_category'] = 'string'
+                type_analysis[col]['sample_values'] = df[col].dropna().head(3).tolist()
+            elif pd.api.types.is_datetime64_any_dtype(df[col]):
+                type_analysis[col]['type_category'] = 'datetime'
+                type_analysis[col]['sample_values'] = df[col].dropna().head(3).dt.strftime('%Y-%m-%d').tolist()
+            else:
+                type_analysis[col]['type_category'] = 'other'
+                type_analysis[col]['sample_values'] = df[col].dropna().head(3).tolist()
+        
+        result_df = pd.DataFrame(type_analysis).T
+        
+        return {
+            "success": True,
+            "answer": result_df,
+            "explanation": f"Data types analysis: Found {len(df.columns)} columns with various data types. Check for appropriate types and consider optimization for memory usage.",
+            "code": """
+type_analysis = {}
+for col in df.columns:
+    type_analysis[col] = {
+        'data_type': str(df[col].dtype),
+        'non_null_count': df[col].count(),
+        'null_count': df[col].isnull().sum(),
+        'unique_count': df[col].nunique()
+    }
+result = pd.DataFrame(type_analysis).T
+"""
+        }
+    
+    def _analyze_patterns(self, df):
+        """Analyze patterns in the data"""
+        patterns = {
+            'numeric_patterns': {},
+            'categorical_patterns': {},
+            'temporal_patterns': {}
+        }
+        
+        # Numeric patterns
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            patterns['numeric_patterns'][col] = {
+                'skewness': round(df[col].skew(), 3),
+                'has_outliers': (abs(df[col] - df[col].mean()) > 3 * df[col].std()).any(),
+                'value_range': f"{df[col].min()} to {df[col].max()}",
+                'zero_count': (df[col] == 0).sum()
+            }
+        
+        # Categorical patterns
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        for col in categorical_cols:
+            value_counts = df[col].value_counts()
+            patterns['categorical_patterns'][col] = {
+                'most_common': value_counts.index[0] if len(value_counts) > 0 else 'N/A',
+                'most_common_count': value_counts.iloc[0] if len(value_counts) > 0 else 0,
+                'unique_ratio': round(len(value_counts) / len(df), 3),
+                'top_3_values': value_counts.head(3).to_dict()
+            }
+        
+        return {
+            "success": True,
+            "answer": patterns,
+            "explanation": "Pattern analysis: Identifies data distributions, common values, and potential anomalies. Look for skewed distributions or dominant categories.",
+            "code": "# Pattern analysis using value_counts, skewness, and statistical measures"
+        }
+    
+    def _generate_insights(self, df):
+        """Generate automated insights from data"""
+        insights = []
+        
+        # Basic dataset insights
+        insights.append(f"Dataset contains {df.shape[0]:,} rows and {df.shape[1]} columns")
+        insights.append(f"Total missing values: {df.isnull().sum().sum():,}")
+        insights.append(f"Memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
+        
+        # Numeric columns insights
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            insights.append(f"Found {len(numeric_cols)} numeric columns for analysis")
+            # Find column with highest variance
+            if len(numeric_cols) > 1:
+                highest_var = numeric_cols[df[numeric_cols].var().argmax()]
+                insights.append(f"'{highest_var}' shows the highest variability")
+        
+        # Categorical columns insights
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        if len(categorical_cols) > 0:
+            insights.append(f"Found {len(categorical_cols)} categorical columns")
+            for col in categorical_cols[:2]:  # First 2 columns
+                unique_count = df[col].nunique()
+                if unique_count < 10:
+                    insights.append(f"'{col}' has {unique_count} distinct categories")
+        
+        # Data quality insights
+        duplicate_count = df.duplicated().sum()
+        if duplicate_count > 0:
+            insights.append(f"⚠️ Found {duplicate_count} duplicate rows")
+        
+        high_missing_cols = [col for col in df.columns if df[col].isnull().sum() / len(df) > 0.5]
+        if high_missing_cols:
+            insights.append(f"⚠️ Columns with >50% missing values: {', '.join(high_missing_cols)}")
+        
+        return {
+            "success": True,
+            "answer": insights,
+            "explanation": "Automated insights provide key observations about your dataset. Pay attention to warnings about data quality issues.",
+            "code": "# Automated insights generation based on data characteristics"
+        }
+    
+    def _analyze_outliers(self, df):
+        """Detect outliers in numeric columns"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        
+        if len(numeric_cols) == 0:
+            return self._error_response("No numeric columns found for outlier detection")
+        
+        outlier_analysis = {}
+        
+        for col in numeric_cols:
+            Q1 = df[col].quantile(0.25)
+            Q3 = df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)][col]
+            
+            outlier_analysis[col] = {
+                'outlier_count': len(outliers),
+                'outlier_percentage': round((len(outliers) / len(df)) * 100, 2),
+                'lower_bound': lower_bound,
+                'upper_bound': upper_bound,
+                'min_value': df[col].min(),
+                'max_value': df[col].max(),
+                'outlier_values': outliers.tolist() if len(outliers) <= 5 else outliers.head(5).tolist()
+            }
+        
+        # Create box plot visualization
+        if len(numeric_cols) > 0:
+            fig = px.box(df[numeric_cols[:5]], title="Outlier Detection - Box Plots")
+        else:
+            fig = None
+        
+        return {
+            "success": True,
+            "answer": outlier_analysis,
+            "explanation": f"Outlier analysis: Uses IQR method to detect unusual values. Columns with >5% outliers may need special treatment.",
+            "visualization": fig,
+            "code": """
+outlier_analysis = {}
+for col in df.select_dtypes(include=[np.number]).columns:
+    Q1 = df[col].quantile(0.25)
+    Q3 = df[col].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
+    outlier_analysis[col] = len(outliers)
+result = outlier_analysis
+"""
+        }
+    
+    def _analyze_distributions(self, df):
+        """Analyze distributions of numeric columns"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        
+        if len(numeric_cols) == 0:
+            return self._error_response("No numeric columns found for distribution analysis")
+        
+        distribution_analysis = {}
+        
+        for col in numeric_cols:
+            distribution_analysis[col] = {
+                'mean': round(df[col].mean(), 2),
+                'median': round(df[col].median(), 2),
+                'std_dev': round(df[col].std(), 2),
+                'skewness': round(df[col].skew(), 3),
+                'kurtosis': round(df[col].kurtosis(), 3),
+                'is_normal': abs(df[col].skew()) < 1,  # Simple normality check
+                'percentiles': {
+                    '5%': round(df[col].quantile(0.05), 2),
+                    '25%': round(df[col].quantile(0.25), 2),
+                    '75%': round(df[col].quantile(0.75), 2),
+                    '95%': round(df[col].quantile(0.95), 2)
+                }
+            }
+        
+        # Create histogram visualization for first few columns
+        if len(numeric_cols) > 0:
+            cols_to_plot = numeric_cols[:min(3, len(numeric_cols))]
+            if len(cols_to_plot) == 1:
+                fig = px.histogram(df, x=cols_to_plot[0], title=f"Distribution of {cols_to_plot[0]}")
+            else:
+                fig = make_subplots(rows=len(cols_to_plot), cols=1, subplot_titles=cols_to_plot)
+                for i, col in enumerate(cols_to_plot, 1):
+                    hist = px.histogram(df, x=col)
+                    fig.add_trace(hist.data[0], row=i, col=1)
+                fig.update_layout(height=300 * len(cols_to_plot), showlegend=False)
+        else:
+            fig = None
+        
+        return {
+            "success": True,
+            "answer": distribution_analysis,
+            "explanation": "Distribution analysis: Shows how data is spread across numeric columns. Skewness near 0 suggests normal distribution.",
+            "visualization": fig,
+            "code": """
+distribution_analysis = {}
+for col in df.select_dtypes(include=[np.number]).columns:
+    distribution_analysis[col] = {
+        'mean': df[col].mean(),
+        'median': df[col].median(),
+        'std': df[col].std(),
+        'skewness': df[col].skew()
+    }
+result = distribution_analysis
+"""
+        }
+    
+    def _analyze_dataset_size(self, df):
+        """Analyze dataset size and characteristics"""
+        size_analysis = {
+            'dimensions': {
+                'rows': df.shape[0],
+                'columns': df.shape[1],
+                'total_cells': df.shape[0] * df.shape[1]
+            },
+            'memory_usage': {
+                'total_mb': round(df.memory_usage(deep=True).sum() / 1024**2, 2),
+                'per_row_kb': round(df.memory_usage(deep=True).sum() / (len(df) * 1024), 2),
+                'optimization_potential': 'High' if df.memory_usage(deep=True).sum() > 100 * 1024**2 else 'Medium'
+            },
+            'data_composition': {
+                'numeric_columns': len(df.select_dtypes(include=[np.number]).columns),
+                'categorical_columns': len(df.select_dtypes(include=['object']).columns),
+                'datetime_columns': len(df.select_dtypes(include=['datetime64']).columns),
+                'boolean_columns': len(df.select_dtypes(include=['bool']).columns)
+            },
+            'performance_category': 'Small' if len(df) < 10000 else 'Medium' if len(df) < 100000 else 'Large'
+        }
+        
+        return {
+            "success": True,
+            "answer": size_analysis,
+            "explanation": f"Dataset size analysis: {size_analysis['performance_category'].lower()}-sized dataset suitable for {size_analysis['performance_category'].lower()}-scale analysis. Memory usage: {size_analysis['memory_usage']['total_mb']} MB.",
+            "code": """
+size_analysis = {
+    'rows': df.shape[0],
+    'columns': df.shape[1],
+    'memory_mb': df.memory_usage(deep=True).sum() / 1024**2,
+    'numeric_columns': len(df.select_dtypes(include=[np.number]).columns)
+}
+result = size_analysis
+"""
+        }
+
     def analyze_question(self, df, question):
         """Main analysis function with reliable template matching"""
         try:
