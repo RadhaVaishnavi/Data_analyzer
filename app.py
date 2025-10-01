@@ -47,14 +47,13 @@ def load_analyzer_model():
             model_name,
             token=HF_TOKEN,
             device_map="auto",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=torch.float16,  # Fixed: using dtype instead of torch_dtype
             trust_remote_code=True
         )
         
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             
-        st.success("✅ AI Model loaded successfully!")
         return tokenizer, model
         
     except Exception as e:
@@ -68,6 +67,7 @@ class CSVAnalyzerAI:
         if model_components:
             self.tokenizer, self.model = model_components
             self.safe_imports = {'pd': pd, 'np': __import__('numpy')}
+            st.success("✅ AI Model loaded successfully!")
         else:
             raise Exception("Model failed to load")
     
@@ -189,13 +189,6 @@ def main():
         1. Upload CSV file
         2. Ask questions about your data
         3. Get AI-powered analysis
-        """)
-        
-        st.header("🔧 Setup")
-        st.markdown("""
-        **Secrets Configuration:**
-        - Make sure `HUGGINGFACE_KEY` is set in Streamlit secrets
-        - Get your token from [Hugging Face](https://huggingface.co/settings/tokens)
         """)
     
     # Initialize analyzer
